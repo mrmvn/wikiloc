@@ -10,6 +10,7 @@ from wikiloc.parser import (
     _parse_page_range,
     _compute_located_pages,
     _extract_ids_from_text,
+    _detect_template_name,
 )
 
 
@@ -31,6 +32,28 @@ def test_parse_cite_template_string():
     assert parse("{{citation|title=Y|pages=100-150}}") == {
         'cite_type': 'citation', 'locators': {'pages': '100-150'}, 'ids': {},
     }
+
+
+def test_parse_cite_video_game_uses_specific_locators():
+    # A2: 'cite video game' must resolve to its own entry (level/scene/quote-*),
+    # not the truncated 'cite video' (generic list) — so 'page' is dropped here.
+    assert parse("{{cite video game|title=X|level=3|scene=S1|page=99}}") == {
+        'cite_type': 'cite video game',
+        'locators': {'level': '3', 'scene': 'S1'},
+        'ids': {},
+    }
+
+
+def test_detect_template_name_prefers_longest_cite():
+    # A2: three-word 'cite ...' templates map to their specific entry.
+    assert _detect_template_name("{{cite video game | title=X}}", 'en') == 'cite video game'
+    assert _detect_template_name("{{cite AV media | title=X}}", 'en') == 'cite av media'
+    # Two-word templates still resolve.
+    assert _detect_template_name("{{cite book | title=X}}", 'en') == 'cite book'
+    # Unknown two-word templates keep their name (fall back to the generic
+    # 'cite' locator list in _parse_cite_template) rather than collapsing.
+    assert _detect_template_name("{{cite dnb | title=X}}", 'en') == 'cite dnb'
+    assert _detect_template_name("{{cite press release | title=X}}", 'en') == 'cite press'
 
 
 def test_parse_ref_tag_and_rp_override():
@@ -75,6 +98,22 @@ def test_parse_untemplated_separates_ids():
     }
     # Bare year/score ranges are not mistaken for page numbers
     assert parse("The Kent League 1894–1930") == {'cite_type': None, 'locators': {}, 'ids': {}}
+
+
+def test_parse_fr_cite_report_locators():
+    # A3: the French 'cite report' key is lowercase and 'page' is spelled
+    # correctly (was the capital-C 'Cite report' and the 'pasge' typo).
+    assert parse("{{cite report|titre=X|page=5}}", 'fr') == {
+        'cite_type': 'cite report',
+        'locators': {'page': '5'},
+        'ids': {},
+    }
+    # Capitalised template name is normalised too.
+    assert parse("{{Cite report|titre=X|pages=12-14|page=5}}", 'fr') == {
+        'cite_type': 'cite report',
+        'locators': {'pages': '12-14', 'page': '5'},
+        'ids': {},
+    }
 
 
 # --- Helper coverage (used by the pipeline and public API) ------------------

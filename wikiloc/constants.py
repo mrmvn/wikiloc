@@ -160,7 +160,7 @@ LOC_PARAMS = {
         'Article encyclopédique': ['passage', 'page', 'citation', 'quote', 'extrait'], # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Article_encyclop%C3%A9dique#Param%C3%A8tres
         'Citation épisode': [],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Citation_%C3%A9pisode#Param%C3%A8tres
         'Cite archive': ['section', 'pièce', 'item'],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Cite_archive#Param%C3%A8tres
-        'Cite report': ['pasge', 'pages', 'passages', 'quote', 'extrait'],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Cite_report#Param%C3%A8tres
+        'cite report': ['page', 'pages', 'passages', 'quote', 'extrait'],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Cite_report#Param%C3%A8tres
         'Bibliographie': ['page'], # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Bibliographie#Comment_remplir_l'%C3%A9l%C3%A9ment_Wikidata
         'Citation jeu vidéo': ['niveau', 'extrait', 'dialogue'], # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Citation_jeu_vid%C3%A9o#TemplateData
         'DVDBibliographie': ['numéro épisode', 'titre épisode', 'passage'],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:DVDBibliographie#Syntaxe_compl%C3%A8te

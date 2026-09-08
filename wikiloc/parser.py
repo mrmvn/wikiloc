@@ -20,6 +20,11 @@ from .constants import LOC_PARAMS, ID_ALIASES, HARV_TEMPLATES
 # alias table so the public output can separate identifiers from locators.
 _ID_KEYS = set(ID_ALIASES.values())
 
+# Lowercased English template names known to LOC_PARAMS, used to resolve the
+# longest matching name for 'cite ...' templates (e.g. 'cite video game'
+# rather than the truncated 'cite video').
+_EN_TEMPLATE_KEYS = {k.lower() for k in LOC_PARAMS['en']}
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -265,14 +270,20 @@ def _detect_template_name(wikitext: str, language: str = 'en') -> Optional[str]:
         # Harvard author–date short-cite family — collapse all variants to 'harv'.
         if first in HARV_TEMPLATES:
             return 'harv'
-        # For English, normalize 'cite ...' templates
+        # For English, normalize 'cite ...' templates. Prefer a known
+        # three-word name ('cite video game', 'cite av media'); otherwise keep
+        # the two-word prefix as before (unknown templates retain their name
+        # and fall back to the generic 'cite' locator list in
+        # _parse_cite_template).
         if template_name.lower().startswith('cite'):
             parts = template_name.split()
+            if len(parts) >= 3:
+                candidate = " ".join(parts[:3]).lower()
+                if candidate in _EN_TEMPLATE_KEYS:
+                    return candidate
             if len(parts) >= 2:
-                # cite web, cite book, etc.
                 return f"{parts[0].lower()} {parts[1].lower()}"
-            else:
-                return template_name.lower()
+            return template_name.lower()
         return None
 
     elif language == 'fr':
