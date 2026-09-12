@@ -84,7 +84,6 @@ def _ref_from_wikitext(wikitext: str, language: str = 'en') -> dict:
         return {
             'ref_kind': 'ref_tag+rp' if rp_raw else 'ref_tag',
             'ref_contents': inner,
-            'ref_raw': s,
             'ref_rp_raw': rp_raw,
             'ref_name': _ref_name_from_attrs(attrs),
             'ref_self_closing': self_closing,
@@ -92,19 +91,19 @@ def _ref_from_wikitext(wikitext: str, language: str = 'en') -> dict:
 
     token = _leading_template_token(s)
     if token == 'r':
-        return {'ref_kind': 'r_template', 'ref_raw': s, 'ref_contents': s}
+        return {'ref_kind': 'r_template', 'ref_contents': s}
     if token == 'sfn':
-        return {'ref_kind': 'sfn_template', 'ref_raw': s, 'ref_contents': s}
+        return {'ref_kind': 'sfn_template', 'ref_contents': s}
     if token == 'sfnp':
-        return {'ref_kind': 'sfnp_template', 'ref_raw': s, 'ref_contents': s}
+        return {'ref_kind': 'sfnp_template', 'ref_contents': s}
     if token in HARV_TEMPLATES:
-        return {'ref_kind': 'harv_template', 'ref_raw': s, 'ref_contents': s}
+        return {'ref_kind': 'harv_template', 'ref_contents': s}
     if token == 'rp':
         # Standalone {{rp|...}}: reuse the ref_tag+rp path with empty contents.
-        return {'ref_kind': 'ref_tag+rp', 'ref_contents': '', 'ref_raw': s, 'ref_rp_raw': s}
+        return {'ref_kind': 'ref_tag+rp', 'ref_contents': '', 'ref_rp_raw': s}
 
     # A bare cite/citation/other template, or free text: treat as ref contents.
-    return {'ref_kind': 'ref_tag', 'ref_contents': s, 'ref_raw': s}
+    return {'ref_kind': 'ref_tag', 'ref_contents': s}
 
 
 def _leading_template_token(s: str) -> Optional[str]:
@@ -167,15 +166,8 @@ def _group_output(flat: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _ref_content(ref: dict) -> str:
-    """Return a ref's locator-bearing content (template or plain text).
-
-    For bare templates (r/sfn/sfnp/harv) the content is the template string.
-    Tolerates legacy records that leave ``ref_contents`` empty and put the
-    template in ``ref_raw`` instead.
-    """
-    if ref.get('ref_contents'):
-        return ref['ref_contents']
-    return ref.get('ref_raw') or ''
+    """Return a ref's locator-bearing content (template or plain text)."""
+    return ref.get('ref_contents') or ''
 
 
 def parse_reference(ref: dict, language: str = 'en'):
@@ -186,8 +178,8 @@ def parse_reference(ref: dict, language: str = 'en'):
     with cite_type and any location indicators found.
 
     Args:
-        ref: A reference record from the citations NDJSON file, with keys like
-             ref_kind, ref_contents, ref_raw, ref_rp_raw, ref_template_params
+        ref: A reference record with the keys ref_kind, ref_contents,
+             ref_rp_raw, ref_name and ref_self_closing (see extract_references).
         language: Language code ('en' or 'fr') for template and location keyword detection
 
     Returns:
