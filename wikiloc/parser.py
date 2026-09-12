@@ -30,7 +30,7 @@ _EN_TEMPLATE_KEYS = {k.lower() for k in LOC_PARAMS['en']}
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse(wikitext, language: str = 'en'):
+def parse(wikitext, language: str = 'en', with_flags: bool = False):
     """Parse reference wikitext and extract locators.
 
     Accepts either:
@@ -44,6 +44,10 @@ def parse(wikitext, language: str = 'en'):
     Args:
         wikitext: A single reference string, or a list of reference strings/records.
         language: Language code ('en' or 'fr') for template and locator detection.
+        with_flags: When True, run :func:`detect_locator_issues` and add its issue
+            codes under a ``'flags'`` key (one key per reference for a list).
+            Off by default so ``parse`` output stays a faithful transcription of
+            the source; flagging is an opt-in audit step.
 
     Returns:
         For a single string, a dict with:
@@ -51,8 +55,10 @@ def parse(wikitext, language: str = 'en'):
             - 'locators':  in-source locators found (page, pages, chapter, quote, ...)
             - 'ids':       identifiers found (isbn, doi, pmid, pmc, arxiv)
             - 'ref_key':   short-cite key for {{r}}/{{sfn}}/{{sfnp}} (only when present)
+            - 'flags':     list of issue codes (only when ``with_flags=True``)
         For a list, the resolved flat dicts (one per reference, annotated with
-        'ref_type' and 'ref_name'), as returned by :func:`resolve_references`.
+        'ref_type' and 'ref_name', plus 'flags' when ``with_flags=True``), as
+        returned by :func:`resolve_references`.
 
     Examples:
         >>> parse("{{cite book|title=X|isbn=978-0-13-468599-1|page=42}}")
@@ -61,13 +67,22 @@ def parse(wikitext, language: str = 'en'):
         {'cite_type': None, 'locators': {'p': '42'}, 'ids': {}, 'ref_key': 'Smith'}
         >>> parse("Smith, John (2020). Title. Publisher. p. 42")
         {'cite_type': None, 'locators': {'page': '42'}, 'ids': {}}
+        >>> parse("{{cite book|title=X|pages=240}}", with_flags=True)['flags']
+        ['pages_single']
     """
     if isinstance(wikitext, str):
         ref = _ref_from_wikitext(wikitext, language)
         flat = parse_reference(ref, language)
-        return _group_output(flat)
+        result = _group_output(flat)
+        if with_flags:
+            result['flags'] = detect_locator_issues(result)
+        return result
     # A list of references (strings or records): resolve with name inheritance.
-    return resolve_references(wikitext, language)
+    resolved = resolve_references(wikitext, language)
+    if with_flags:
+        for record in resolved:
+            record['flags'] = detect_locator_issues(record)
+    return resolved
 
 
 def _ref_from_wikitext(wikitext: str, language: str = 'en') -> dict:
@@ -431,8 +446,32 @@ def _parse_cite_template(wikitext: str, language: str = 'en'):
     return out
 
 
-# A page token: optional single letter + 1-6 digits ("42", "S5", "A01", "11076").
-_PAGE_TOKEN = re.compile(r'[A-Za-z]?\d{1,6}')
+# A page token: optional single letter + one or more digits ("42", "S5",
+# "A01", "11076", "1000000"). There is no digit cap: absurd magnitudes are
+# caught by the 'page_huge' flag rather than rejected as unparseable.
+_PAGE_TOKEN = re.compile(r'[A-Za-z]?\d+')
+
+# Flag thresholds (tunable). A page/p number above PAGE_HUGE_THRESHOLD, or a
+# pages/pp range longer than PAGES_RANGE_HUGE_THRESHOLD, is almost certainly a
+# data error (a total-page count, a typo, or a non-locator value).
+PAGE_HUGE_THRESHOLD = 99999
+PAGES_RANGE_HUGE_THRESHOLD = 999
+
+
+def _range_bounds(value: str):
+    """Return (lo, hi) for the first page range found in ``value``, else None.
+
+    Expands abbreviated ends ("446–52" → (446, 452), "142–3" → (142, 143)).
+    Mirrors the range detection used by :func:`_parse_page_range`.
+    """
+    m = re.search(r'([A-Za-z]?\d+)\s*[–—−-]+\s*([A-Za-z]?\d+)', value or '')
+    if not m:
+        return None
+    lo_d, hi_d = re.sub(r'\D', '', m.group(1)), re.sub(r'\D', '', m.group(2))
+    lo, hi = int(lo_d), int(hi_d)
+    if len(hi_d) < len(lo_d):
+        hi = int(lo_d[:len(lo_d) - len(hi_d)] + hi_d)
+    return lo, hi
 
 
 def _parse_page_range(value: str) -> Optional[int]:
@@ -454,14 +493,9 @@ def _parse_page_range(value: str) -> Optional[int]:
 
     # Range with dash/en-dash/em-dash, optionally with letter prefixes ("S1-S5").
     # Searched anywhere, so trailing annotations ("200–201 & sketch 19") still parse.
-    m = re.search(r'([A-Za-z]?\d{1,6})\s*[–—−-]+\s*([A-Za-z]?\d{1,6})', v)
-    if m:
-        lo_s, hi_s = m.group(1), m.group(2)
-        lo_d, hi_d = re.sub(r'\D', '', lo_s), re.sub(r'\D', '', hi_s)
-        lo, hi = int(lo_d), int(hi_d)
-        # Abbreviated end: "446–52" -> 452, "142–3" -> 143.
-        if len(hi_d) < len(lo_d):
-            hi = int(lo_d[:len(lo_d) - len(hi_d)] + hi_d)
+    bounds = _range_bounds(v)
+    if bounds is not None:
+        lo, hi = bounds
         if hi >= lo:
             return hi - lo + 1
         return 1
@@ -521,43 +555,148 @@ def _classify_page_value(value: str) -> Optional[str]:
     if ',' in v:
         parts = [p.strip() for p in v.split(',') if p.strip()]
         return 'list' if (parts and all(_PAGE_TOKEN.fullmatch(p) for p in parts)) else 'unparseable'
-    if re.search(r'[A-Za-z]?\d{1,6}\s*[–—−-]+\s*[A-Za-z]?\d{1,6}', v):
+    if re.search(r'[A-Za-z]?\d+\s*[–—−-]+\s*[A-Za-z]?\d+', v):
         return 'range'
     if _PAGE_TOKEN.fullmatch(v):
         return 'single'
     return 'unparseable'
 
 
-def page_locator_flags(parsed_ref: dict) -> list:
-    """Flag suspicious page/pages locator values, for later manual review.
+def _numbers_in(value: str) -> list:
+    """Return every integer appearing in ``value`` (empty list when none)."""
+    return [int(n) for n in re.findall(r'\d+', value or '')]
+
+
+def _is_reversed_range(value: str) -> bool:
+    """True when a page range runs backwards (e.g. "150-100", "S5-S1")."""
+    bounds = _range_bounds((value or '').strip())
+    return bounds is not None and bounds[1] < bounds[0]
+
+
+def _is_clean_page_value(value: str) -> bool:
+    """True when a page value holds only page tokens, separators and whitespace.
+
+    "100-150", "42", "S1-S5", "100, 105" are clean; "200–201 & sketch 19" is
+    not (a range can be extracted from it, but it also carries prose).
+    """
+    cleaned = re.sub(r'[A-Za-z]?\d+', '', value or '')
+    cleaned = re.sub(r'[–—−\-,\s]', '', cleaned)
+    return cleaned == ''
+
+
+def _page_span(value: str):
+    """Return the (lo, hi) numeric span of a page value, or None if unparseable."""
+    v = (value or '').strip()
+    bounds = _range_bounds(v)
+    if bounds is not None:
+        return (min(bounds), max(bounds))
+    nums = _numbers_in(v)
+    return (min(nums), max(nums)) if nums else None
+
+
+def _page_pages_conflict(page_val: str, pages_val: str) -> bool:
+    """True when a page/p pinpoint falls outside the pages/pp range.
+
+    The pages value must itself be a range or list; a single ``pages`` number
+    is more likely a total-page count and is covered by 'pages_single'.
+    """
+    if _classify_page_value(pages_val) not in ('range', 'list'):
+        return False
+    page_span = _page_span(page_val)
+    pages_span = _page_span(pages_val)
+    if page_span is None or pages_span is None:
+        return False
+    return page_span[0] < pages_span[0] or page_span[1] > pages_span[1]
+
+
+# Keys that are not locators in a flat record: cite/ref metadata and identifiers.
+_NON_LOCATOR_KEYS = {'cite_type', 'ref_type', 'ref_name', 'ref_key', 'flags'} | _ID_KEYS
+
+
+def _has_no_locators(parsed_ref: dict) -> bool:
+    """True when a parse result carries no locator at all.
+
+    For a grouped result the ``locators`` map is authoritative; for a flat
+    record, cite/ref metadata and identifiers are ignored, so that e.g.
+    ``{'cite_type': 'cite book', 'isbn': ...}`` counts as locator-less.
+    """
+    if isinstance(parsed_ref, dict) and 'locators' in parsed_ref:
+        return not parsed_ref.get('locators')
+    return not any(
+        key not in _NON_LOCATOR_KEYS and value
+        for key, value in (parsed_ref or {}).items()
+    )
+
+
+def detect_locator_issues(parsed_ref: dict) -> list:
+    """Detect suspicious or missing locator values, for later manual review.
 
     Accepts either a grouped parse result or a flat locator record. Returns a
     list of issue codes (empty when nothing looks off):
-      - 'pages_single'        a pages/pp value is a single page number
-                              (often a total-page count, not a locator).
-      - 'page_range'          a page/p value holds a range or comma list
-                              (probably belongs in pages).
-      - 'page_unparseable'    a page/p value could not be parsed.
-      - 'pages_unparseable'   a pages/pp value could not be parsed.
+      - 'no_locator'           the reference declares no locator at all.
+      - 'pages_single'         a pages/pp value is a single page number
+                               (often a total-page count, not a locator).
+      - 'page_range'           a page/p value holds a range or comma list
+                               (probably belongs in pages).
+      - 'page_unparseable'     a page/p value could not be parsed.
+      - 'pages_unparseable'    a pages/pp value could not be parsed.
+      - 'page_huge'            a page/p number exceeds ``PAGE_HUGE_THRESHOLD``.
+      - 'pages_range_huge'     a pages/pp range exceeds
+                               ``PAGES_RANGE_HUGE_THRESHOLD``.
+      - 'page_reversed_range'  a page/p range runs backwards (hi < lo).
+      - 'pages_reversed_range' a pages/pp range runs backwards (hi < lo).
+      - 'page_noisy'           a parseable page/p value carries extra prose.
+      - 'page_pages_conflict'  page/p falls outside the pages/pp range.
+
+    'no_locator' is returned alone; the remaining codes may co-occur. Order is
+    stable and de-duplicated.
     """
     locs = _locators_of(parsed_ref)
+    if _has_no_locators(parsed_ref):
+        return ['no_locator']
+
     flags = []
     for key in ('page', 'p'):
         v = locs.get(key)
-        if v:
-            kind = _classify_page_value(v)
-            if kind in ('range', 'list'):
-                flags.append('page_range')
-            elif kind == 'unparseable':
-                flags.append('page_unparseable')
+        if not v:
+            continue
+        kind = _classify_page_value(v)
+        if kind in ('range', 'list'):
+            flags.append('page_range')
+        elif kind == 'unparseable':
+            flags.append('page_unparseable')
+        # Magnitude is independent of grammar: flag an oversized number even
+        # when the value is otherwise unparseable.
+        span = _page_span(v)
+        if span and span[1] > PAGE_HUGE_THRESHOLD:
+            flags.append('page_huge')
+        if kind != 'unparseable':
+            if _is_reversed_range(v):
+                flags.append('page_reversed_range')
+            if not _is_clean_page_value(v):
+                flags.append('page_noisy')
+
     for key in ('pages', 'pp'):
         v = locs.get(key)
-        if v:
-            kind = _classify_page_value(v)
-            if kind == 'single':
-                flags.append('pages_single')
-            elif kind == 'unparseable':
-                flags.append('pages_unparseable')
+        if not v:
+            continue
+        kind = _classify_page_value(v)
+        if kind == 'single':
+            flags.append('pages_single')
+        elif kind == 'unparseable':
+            flags.append('pages_unparseable')
+        if kind != 'unparseable':
+            if _is_reversed_range(v):
+                flags.append('pages_reversed_range')
+            count = _parse_page_range(v)
+            if count and count > PAGES_RANGE_HUGE_THRESHOLD:
+                flags.append('pages_range_huge')
+
+    page_val = locs.get('page') or locs.get('p')
+    pages_val = locs.get('pages') or locs.get('pp')
+    if page_val and pages_val and _page_pages_conflict(page_val, pages_val):
+        flags.append('page_pages_conflict')
+
     return list(dict.fromkeys(flags))
 
 
@@ -729,8 +868,9 @@ def _parse_untemplated_ref(wikitext: str, language: str = 'en'):
     t = re.sub(r"\s+", " ", t).strip()
     t_l = t.lower()
 
-    # A page token: optional single section letter (S12, A3) + 1–4 digits,
-    # which bounds the magnitude and avoids matching long IDs.
+    # A page token: optional single section letter + up to 6 digits. Free text
+    # keeps this cap (unlike template page/pages values, which are uncapped) to
+    # avoid matching long IDs; a longer digit run is simply not detected here.
     tok = r"[a-z]?\d{1,6}"      # up to 6 digits: single pages like Keesing's 11076
     range_pat = rf"{tok}\s*[-–—]\s*{tok}"
 

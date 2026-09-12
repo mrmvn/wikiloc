@@ -10,10 +10,11 @@ from wikiloc import parse
 from wikiloc.parser import (
     _extract_template_params,
     _parse_page_range,
+    _range_bounds,
     compute_located_pages,
     _extract_ids_from_text,
     _detect_template_name,
-    page_locator_flags,
+    detect_locator_issues,
     resolve_references,
 )
 
@@ -208,22 +209,95 @@ def test_removed_non_locator_keywords():
     }
 
 
-def test_page_locator_flags():
-    assert page_locator_flags({'pages': '240'}) == ['pages_single']
-    assert page_locator_flags({'page': '100-150'}) == ['page_range']
-    assert page_locator_flags({'page': '25, [url] 29'}) == ['page_unparseable']
-    assert page_locator_flags({'page': 'pages 32'}) == ['page_unparseable']
-    assert page_locator_flags({'pages': '4B}}{{Open Access'}) == ['pages_unparseable']
-    assert page_locator_flags({'page': '42'}) == []
-    assert page_locator_flags({'pages': '100-150'}) == []
-    assert page_locator_flags({'pages': 'S1-S5'}) == []
+def test_detect_locator_issues():
+    assert detect_locator_issues({'pages': '240'}) == ['pages_single']
+    assert detect_locator_issues({'page': '100-150'}) == ['page_range']
+    assert detect_locator_issues({'page': '25, [url] 29'}) == ['page_unparseable']
+    assert detect_locator_issues({'page': 'pages 32'}) == ['page_unparseable']
+    assert detect_locator_issues({'pages': '4B}}{{Open Access'}) == ['pages_unparseable']
+    assert detect_locator_issues({'page': '42'}) == []
+    assert detect_locator_issues({'pages': '100-150'}) == []
+    assert detect_locator_issues({'pages': 'S1-S5'}) == []
 
 
-def test_page_locator_flags_grouped():
+def test_detect_locator_issues_grouped():
     # accepts the grouped parse() output
-    assert page_locator_flags(parse("{{cite book|title=X|page=ff42xx,44}}")) == ['page_unparseable']
-    assert page_locator_flags(parse("{{cite book|title=X|pages=240}}")) == ['pages_single']
-    assert page_locator_flags(parse("{{cite book|title=X|page=42}}")) == []
+    assert detect_locator_issues(parse("{{cite book|title=X|page=ff42xx,44}}")) == ['page_unparseable']
+    assert detect_locator_issues(parse("{{cite book|title=X|pages=240}}")) == ['pages_single']
+    assert detect_locator_issues(parse("{{cite book|title=X|page=42}}")) == []
+
+
+def test_detect_locator_issues_no_locator():
+    # grouped result with only a title -> no locator
+    assert detect_locator_issues(parse("{{cite book|title=X}}")) == ['no_locator']
+    # flat record: cite/ref metadata and ids are not locators
+    assert detect_locator_issues({'cite_type': 'cite book', 'isbn': '978-0-13-468599-1'}) == ['no_locator']
+    assert detect_locator_issues({'ref_type': 'repeated', 'ref_name': 'x'}) == ['no_locator']
+    assert detect_locator_issues({'quote': 'hi'}) == []
+
+
+def test_detect_locator_issues_reversed_ranges():
+    assert 'page_reversed_range' in detect_locator_issues({'page': '150-100'})
+    assert 'pages_reversed_range' in detect_locator_issues({'pages': '150-100'})
+    assert 'page_reversed_range' in detect_locator_issues({'page': 'S5-S1'})
+    # forward and abbreviated ranges are not reversed
+    assert 'page_reversed_range' not in detect_locator_issues({'page': '100-150'})
+    assert 'page_reversed_range' not in detect_locator_issues({'page': '446-52'})
+
+
+def test_detect_locator_issues_huge():
+    assert 'page_huge' in detect_locator_issues({'page': '100000'})
+    assert 'page_huge' in detect_locator_issues({'page': '100000-100005'})
+    assert 'page_huge' not in detect_locator_issues({'page': '99999'})
+    assert 'pages_range_huge' in detect_locator_issues({'pages': '1-2000'})
+    assert 'pages_range_huge' not in detect_locator_issues({'pages': '1-999'})
+
+
+def test_detect_locator_issues_huge_seven_digits():
+    # no digit cap: 7+ digit values parse (counting as one page) and are flagged
+    # huge, rather than being reported as unparseable.
+    assert detect_locator_issues({'page': '1000000'}) == ['page_huge']
+    assert detect_locator_issues({'page': '12345678'}) == ['page_huge']
+    assert 'page_unparseable' not in detect_locator_issues({'page': '1000000'})
+    assert _parse_page_range('1000000') == 1
+
+
+def test_range_bounds_do_not_truncate():
+    # long endpoints are consumed whole (previously 1-1000000 matched 1-100000)
+    assert _range_bounds('1-1000000') == (1, 1000000)
+    assert _parse_page_range('1-1000000') == 1000000
+    flags = detect_locator_issues({'page': '1-1000000'})
+    assert 'page_huge' in flags and 'page_unparseable' not in flags
+
+
+def test_detect_locator_issues_noisy():
+    flags = detect_locator_issues({'page': '200–201 & sketch 19'})
+    assert 'page_noisy' in flags and 'page_range' in flags
+    assert 'page_noisy' not in detect_locator_issues({'page': '200–201'})
+    assert 'page_noisy' not in detect_locator_issues({'page': '100, 105, 110'})
+
+
+def test_detect_locator_issues_conflict():
+    assert detect_locator_issues({'page': '50', 'pages': '100-150'}) == ['page_pages_conflict']
+    assert detect_locator_issues({'page': '120', 'pages': '100-150'}) == []
+    assert 'page_pages_conflict' not in detect_locator_issues({'page': '100-120', 'pages': '100-150'})
+    # a single pages number is a total-page count, not a range to conflict with
+    assert detect_locator_issues({'page': '50', 'pages': '240'}) == ['pages_single']
+
+
+def test_parse_with_flags():
+    result = parse("{{cite book|title=X|pages=1-2000}}", with_flags=True)
+    assert result['locators'] == {'pages': '1-2000'}
+    assert result['flags'] == ['pages_range_huge']
+    # default output stays flag-free
+    assert 'flags' not in parse("{{cite book|title=X|page=42}}")
+    # list overload annotates every resolved record
+    resolved = parse([
+        '<ref name="x">{{cite book|title=X}}</ref>',
+        '<ref name="x"/>',
+    ], with_flags=True)
+    assert resolved[0]['flags'] == ['no_locator']
+    assert resolved[1]['flags'] == ['no_locator']
 
 
 def testcompute_located_pages_grouped():

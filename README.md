@@ -79,13 +79,30 @@ scores and dates are not mistaken for page numbers.
 
 ## Flags
 
-`wikiloc.page_locator_flags(parsed_ref)` returns issue codes for suspicious
-page values, to help audit citations. It accepts either a `parse()` result or
-a flat locator record:
+`wikiloc.detect_locator_issues(parsed_ref)` returns issue codes for suspicious
+or missing locators, to help audit citations. It accepts either a `parse()`
+result or a flat locator record:
 
+- `no_locator` — the reference declares no locator at all;
 - `pages_single` — a `pages`/`pp` value is a single page number (often a total-page count);
 - `page_range` — a `page`/`p` value holds a range or comma list (probably belongs in `pages`);
-- `page_unparseable` / `pages_unparseable` — the value could not be parsed.
+- `page_unparseable` / `pages_unparseable` — the value could not be parsed;
+- `page_huge` — a `page`/`p` number exceeds `PAGE_HUGE_THRESHOLD` (default 99999);
+- `pages_range_huge` — a `pages`/`pp` range exceeds `PAGES_RANGE_HUGE_THRESHOLD` (default 999);
+- `page_reversed_range` / `pages_reversed_range` — a range runs backwards (`hi < lo`);
+- `page_noisy` — a parseable `page`/`p` value also carries prose (e.g. `200–201 & sketch 19`);
+- `page_pages_conflict` — `page`/`p` falls outside the `pages`/`pp` range.
+
+Flags are **not** run by default, so `parse()` output stays a faithful
+transcription of the source. Opt in with `with_flags=True`:
+
+```python
+parse("{{cite book|title=X|pages=240}}", with_flags=True)
+# {'cite_type': 'cite book', 'locators': {'pages': '240'}, 'ids': {}, 'flags': ['pages_single']}
+```
+
+For a list of references, each resolved record gets its own `flags` key. Thresholds
+live in `wikiloc.parser` (`PAGE_HUGE_THRESHOLD`, `PAGES_RANGE_HUGE_THRESHOLD`).
 
 
 ## Located-page counting
@@ -96,7 +113,7 @@ locator record.
 
 - a single number counts as **1 page**;
 - a `page`/`p` locator counts as **1 page** even if its value is malformed
-  (`page_locator_flags` reports those);
+  (`detect_locator_issues` reports those);
 - a range `a–b` counts as `b − a + 1` pages, with abbreviated ends expanded
   (`446–52` → pp. 446–452, 7 pages);
 - a reversed range counts as 1;
