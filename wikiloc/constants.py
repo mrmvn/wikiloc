@@ -136,6 +136,16 @@ LOC_PARAMS = {
         'harv': ["page", "p", "pages", "pp", "at", "loc"],
     },
     'fr': {
+        # Generic fallback for unlisted / misspelled / new French citation
+        # templates (mirrors the English 'cite' entry). Without it an unknown
+        # template silently loses every locator even when it uses standard
+        # French parameters (page, passage, numéro, ...).
+        'cite': [
+            'page', 'p', 'pages', 'pp', 'passage', 'passages', 'partie',
+            'numéro', 'numéro chapitre', 'titre chapitre', 'chap', 'chapitre',
+            'chapter', 'section', 'article', 'extrait', 'citation', 'quote',
+            'paragraphe', 'référence', 'position',
+        ],
         'Ouvrage': ['partie', 'numéro', 'numéro chapitre', 'titre chapitre', "chap", "chapter", "passage", "page", "extrait"], # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Ouvrage#Passages
         'Lien web': ['page', 'citation'],  # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Lien_web#Param%C3%A8tres
         'Article': ['page' , 'pages', 'p.', 'pp.', 'passage', 'numéro', 'article', 'extrait', 'quote'], # https://fr.wikipedia.org/wiki/Mod%C3%A8le:Article#Param%C3%A8tre_de_l'emplacement_d'un_passage

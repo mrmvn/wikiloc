@@ -27,7 +27,7 @@ def extract_references(wikitext: str) -> List[Dict[str, Any]]:
     ``{{rp}}`` templates are skipped. Requires ``mwparserfromhell``.
     """
     import mwparserfromhell  # type: ignore
-    from mwparserfromhell.nodes import Tag, Template, Text  # type: ignore
+    from mwparserfromhell.nodes import Comment, Tag, Template, Text  # type: ignore
 
     def template_params(tpl: Template) -> Dict[str, str]:
         params: Dict[str, str] = {}
@@ -60,9 +60,11 @@ def extract_references(wikitext: str) -> List[Dict[str, Any]]:
         pending_can_attach_rp = False
 
     for node in getattr(wikicode, "nodes", []) or []:
-        # Whitespace between a <ref> and a following {{rp}} keeps the window open.
-        if pending_can_attach_rp and isinstance(node, Text):
-            if str(node).strip() == "":
+        # Whitespace (and HTML comments) between a <ref> and a following {{rp}}
+        # keeps the window open; an HTML comment is a common editing artifact
+        # and is transparent to the adjacency (WL-6).
+        if pending_can_attach_rp and isinstance(node, (Text, Comment)):
+            if isinstance(node, Comment) or str(node).strip() == "":
                 continue
             clear_pending()
 

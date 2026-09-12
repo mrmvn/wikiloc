@@ -130,6 +130,45 @@ def _leading_template_token(s: str) -> Optional[str]:
     return m.group(1).strip().lower() if m else None
 
 
+def _strip_leading_comments(text: str) -> str:
+    """Drop leading whitespace and HTML comments from ``text``."""
+    s = (text or "").lstrip()
+    while s.startswith('<!--'):
+        end = s.find('-->')
+        if end == -1:
+            break
+        s = s[end + 3:].lstrip()
+    return s
+
+
+def _leading_balanced_template(text: str) -> Optional[str]:
+    """Return the leading balanced ``{{...}}`` template, or None.
+
+    Leading whitespace and HTML comments are skipped first, so
+    ``<!-- note -->{{cite book|...}}`` is detected. Nested braces are counted,
+    so ``{{cite book|quote=a {{b}} c}}`` is returned whole; an unbalanced
+    leading ``{{`` yields None.
+    """
+    s = _strip_leading_comments(text)
+    if not s.startswith('{{'):
+        return None
+    depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        if s.startswith('{{', i):
+            depth += 1
+            i += 2
+        elif s.startswith('}}', i):
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return s[:i]
+        else:
+            i += 1
+    return None
+
+
 def _split_ref_tag(s: str):
     """Split a single ``<ref>`` string into (attrs, inner, self_closing, rp_raw).
 
@@ -216,15 +255,11 @@ def parse_reference(ref: dict, language: str = 'en'):
             returns {'cite_type': None, 'ref_key': 'Author', 'page': '42'}
     """
     if ref['ref_kind'] == 'ref_tag':
-        # Determine if cite template is used or not
-        if is_templated_ref(ref['ref_contents']):
-            return _parse_cite_template(ref['ref_contents'], language)
-        else:
-            return _parse_untemplated_ref(ref['ref_contents'], language)
+        return _parse_ref_tag_contents(ref['ref_contents'], language)
 
     elif ref['ref_kind'] == 'ref_tag+rp':
         # Parse main cite template first
-        main_ref_dict = _parse_cite_template(ref['ref_contents'], language)
+        main_ref_dict = _parse_ref_tag_contents(ref['ref_contents'], language)
         # Parse {{rp|...}} template
         rp_dict = _parse_rp_template(ref['ref_rp_raw'], language)
         # Merge with rp_dict taking priority for location info (it's more specific)
@@ -250,6 +285,52 @@ def parse_reference(ref: dict, language: str = 'en'):
     else:
         # Unknown reference kind
         return {'cite_type': None}
+
+
+def _merge_untemplated_fallback(parsed: dict, fallback: dict) -> dict:
+    """Merge a locator-less template parse with plain-text locators."""
+    merged = dict(fallback)
+    if parsed.get('cite_type') and not merged.get('cite_type'):
+        merged['cite_type'] = parsed['cite_type']
+    for key, value in parsed.items():
+        merged.setdefault(key, value)
+    return merged
+
+
+def _parse_ref_tag_contents(content: str, language: str = 'en'):
+    """Parse ``<ref>`` contents, tolerating text around a leading template.
+
+    A leading balanced template is parsed as the citation; trailing text after
+    it (punctuation, prose, a maintenance comment) no longer defeats detection
+    (WL-1). If the template declares no locator, plain-text page markers in the
+    full contents are used as a fallback, so ``{{cite web|...}} See p. 5.``
+    still finds ``p. 5``. Short-cite templates wrapped in a ``<ref>``
+    (``{{sfn}}``/``{{sfnp}}``/``{{r}}``) are routed to their own parsers
+    (WL-3). Content with no leading template is parsed as untemplated text.
+    """
+    lead = content.strip() if is_templated_ref(content) else _leading_balanced_template(content)
+    if lead is None:
+        return _parse_untemplated_ref(content, language)
+
+    token = _leading_template_token(lead)
+    if token == 'sfn':
+        parsed = _parse_sfn_template(lead, language)
+    elif token == 'sfnp':
+        parsed = _parse_sfnp_template(lead, language)
+    elif token == 'r':
+        parsed = _parse_r_template(lead, language)
+    elif token == 'rp':
+        parsed = _parse_rp_template(lead, language)
+    else:
+        parsed = _parse_cite_template(lead, language)
+
+    if not _has_no_locators(parsed):
+        return parsed
+    if content.strip() == lead:
+        return parsed
+    # The template declares no locator: keep it for cite_type/ids, but also
+    # pick up plain-text page markers in the rest of the contents.
+    return _merge_untemplated_fallback(parsed, _parse_untemplated_ref(content, language))
 
 
 def resolve_references(refs: list, language: str = 'en') -> list:
@@ -372,7 +453,11 @@ def _detect_template_name(wikitext: str, language: str = 'en') -> Optional[str]:
             if key.lower() == template_norm:
                 return key.lower()
 
-        return None
+        # Unknown / unlisted French template: return its name so
+        # _parse_cite_template can apply the generic 'cite' locator fallback
+        # (parity with unknown English {{cite *}} templates) instead of
+        # silently dropping every locator.
+        return template_norm
 
     else:
         # Default to English pattern for unknown languages
@@ -419,8 +504,11 @@ def _parse_cite_template(wikitext: str, language: str = 'en'):
             location_keywords = lang_params.get(key, [])
             break
 
-    # For English 'cite ...' templates, if no exact match, try 'cite'
-    if not location_keywords and language == 'en' and template_name.lower().startswith('cite'):
+    # No template-specific list: fall back to the language's generic 'cite'
+    # locators. English keeps its historical 'cite ...' prefix gate; other
+    # languages (e.g. French) have no naming convention, so any unrecognised
+    # template gets the generic list rather than no locators at all (WL-5).
+    if not location_keywords and (language != 'en' or template_name.lower().startswith('cite')):
         for key in lang_params.keys():
             if key.lower() == 'cite':
                 location_keywords = lang_params.get(key, [])
@@ -474,37 +562,49 @@ def _range_bounds(value: str):
     return lo, hi
 
 
+def _page_count_of_item(item: str) -> Optional[int]:
+    """Page count for one page token or range, else None.
+
+    ``"42"`` → 1, ``"S5"`` → 1, ``"56–57"`` → 2, ``"446–52"`` → 7, ``"foo"`` → None.
+    """
+    item = (item or '').strip()
+    if not item:
+        return None
+    if _PAGE_TOKEN.fullmatch(item):
+        return 1
+    bounds = _range_bounds(item)
+    if bounds is not None:
+        lo, hi = bounds
+        return hi - lo + 1 if hi >= lo else 1
+    return None
+
+
 def _parse_page_range(value: str) -> Optional[int]:
     """Parse a page or page-range string into a page count.
 
     Handles: "42" → 1, "100-150" → 51, "100, 105, 110" → 3,
-    "S1-S5" → 5, abbreviated ends ("446–52" → 7). Returns None if unparseable.
+    "S1-S5" → 5, abbreviated ends ("446–52" → 7), and mixed comma lists
+    of single pages and ranges ("21, 31, 56–57" → 4). Returns None if any
+    comma-separated item is unparseable.
     """
     if not value:
         return None
     v = value.strip()
 
-    # Comma-separated list of page numbers (e.g. "100, 105, 110").
+    # Comma-separated list of single pages and/or ranges.
     if ',' in v:
         parts = [p.strip() for p in v.split(',') if p.strip()]
-        if parts and all(_PAGE_TOKEN.fullmatch(p) for p in parts):
-            return len(parts)
-        return None
+        if not parts:
+            return None
+        total = 0
+        for part in parts:
+            count = _page_count_of_item(part)
+            if count is None:
+                return None
+            total += count
+        return total
 
-    # Range with dash/en-dash/em-dash, optionally with letter prefixes ("S1-S5").
-    # Searched anywhere, so trailing annotations ("200–201 & sketch 19") still parse.
-    bounds = _range_bounds(v)
-    if bounds is not None:
-        lo, hi = bounds
-        if hi >= lo:
-            return hi - lo + 1
-        return 1
-
-    # Single page number → 1 page.
-    if _PAGE_TOKEN.fullmatch(v):
-        return 1
-
-    return None
+    return _page_count_of_item(v)
 
 
 def _locators_of(parsed_ref: dict) -> dict:
@@ -554,7 +654,9 @@ def _classify_page_value(value: str) -> Optional[str]:
         return None
     if ',' in v:
         parts = [p.strip() for p in v.split(',') if p.strip()]
-        return 'list' if (parts and all(_PAGE_TOKEN.fullmatch(p) for p in parts)) else 'unparseable'
+        if not parts:
+            return 'unparseable'
+        return 'list' if all(_page_count_of_item(p) is not None for p in parts) else 'unparseable'
     if re.search(r'[A-Za-z]?\d+\s*[–—−-]+\s*[A-Za-z]?\d+', v):
         return 'range'
     if _PAGE_TOKEN.fullmatch(v):
@@ -587,6 +689,12 @@ def _is_clean_page_value(value: str) -> bool:
 def _page_span(value: str):
     """Return the (lo, hi) numeric span of a page value, or None if unparseable."""
     v = (value or '').strip()
+    if ',' in v:
+        spans = [_page_span(p) for p in v.split(',') if p.strip()]
+        spans = [s for s in spans if s is not None]
+        if not spans:
+            return None
+        return (min(s[0] for s in spans), max(s[1] for s in spans))
     bounds = _range_bounds(v)
     if bounds is not None:
         return (min(bounds), max(bounds))
@@ -1063,7 +1171,7 @@ def _parse_sfnp_template(wikitext: str, language: str = 'en'):
     return out
 
 
-def is_templated_ref(wikitext: dict) -> bool:
+def is_templated_ref(wikitext: str) -> bool:
     """Determine if a reference is templated or not.
     Match the presence of '{{' and '}}' opening and closing the stripped wikitext.
     """
@@ -1072,14 +1180,14 @@ def is_templated_ref(wikitext: dict) -> bool:
     stripped = wikitext.strip()
     return stripped.startswith("{{") and stripped.endswith("}}")
 
-def which_cite_template(wikitext: dict) -> str:
+def which_cite_template(wikitext: str) -> Optional[str]:
     """Identify which cite template is used in the wikitext, if any.
     Match {{ cite ... | ...}} using regex, allowing for variations in spacing and case.
     """
-    pattern = r"\{\{\s*(cite\w*)\s*\|"
+    pattern = r"\{\{\s*(cite[^|}]*?)\s*[|}]"
     match = re.search(pattern, wikitext, re.IGNORECASE)
     if match:
-        return match.group(1).lower()  # Return the template name in lowercase
+        return re.sub(r'\s+', ' ', match.group(1)).strip().lower()
     return None
 
 

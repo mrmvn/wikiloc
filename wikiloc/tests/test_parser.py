@@ -15,7 +15,9 @@ from wikiloc.parser import (
     _extract_ids_from_text,
     _detect_template_name,
     detect_locator_issues,
+    is_templated_ref,
     resolve_references,
+    which_cite_template,
 )
 
 
@@ -354,6 +356,116 @@ def test_parse_article_end_to_end():
     assert resolved[0]['ref_type'] == 'main' and resolved[0]['page'] == '10'
     assert resolved[1]['ref_type'] == 'repeated' and resolved[1]['page'] == '10'  # inherited
     assert resolved[2]['ref_type'] == 'sfn' and resolved[2]['p'] == '42'
+
+
+# --- WL-1: trailing text around a leading template ------------------------
+
+def test_parse_template_with_trailing_text():
+    # trailing punctuation no longer defeats templated-ref detection
+    assert parse("{{cite book|title=X|page=42}}.") == {
+        'cite_type': 'cite book', 'locators': {'page': '42'}, 'ids': {}}
+    assert parse("<ref>{{cite book|title=X|page=42}}.</ref>") == {
+        'cite_type': 'cite book', 'locators': {'page': '42'}, 'ids': {}}
+    # a leading HTML comment is transparent too
+    assert parse("<ref><!-- note -->{{cite book|title=X|page=42}}</ref>") == {
+        'cite_type': 'cite book', 'locators': {'page': '42'}, 'ids': {}}
+    # trailing prose / language annotation
+    assert parse("<ref>{{cite book|title=X|page=42}} (in French)</ref>")['locators'] == {'page': '42'}
+
+
+def test_parse_template_trailing_fallback_and_precedence():
+    # template declares no locator -> a plain-text marker in the trailing text wins
+    assert parse("<ref>{{cite web|title=X}} See p. 5.</ref>") == {
+        'cite_type': 'cite web', 'locators': {'page': '5'}, 'ids': {}}
+    # template declares a locator -> the template wins over the trailing marker
+    assert parse("<ref>{{cite web|title=X|page=3}} See p. 5.</ref>") == {
+        'cite_type': 'cite web', 'locators': {'page': '3'}, 'ids': {}}
+
+
+def test_parse_untemplated_regression():
+    # genuine free text (no leading template) still parses as before
+    assert parse("Smith, John (2020). Title. Publisher. p. 42") == {
+        'cite_type': None, 'locators': {'page': '42'}, 'ids': {}}
+
+
+# --- WL-3: short-cite template wrapped in <ref> ---------------------------
+
+def test_parse_short_cite_wrapped_in_ref():
+    assert parse("<ref>{{sfn|Smith|2020|p=42}}</ref>") == {
+        'cite_type': None, 'locators': {'p': '42'}, 'ids': {}, 'ref_key': 'Smith'}
+    assert parse("<ref>{{sfnp|Smith|2020|pp=42-45}}</ref>") == {
+        'cite_type': None, 'locators': {'pp': '42-45'}, 'ids': {}, 'ref_key': 'Smith'}
+    assert parse("<ref>{{r|Smith2020|page=7}}</ref>") == {
+        'cite_type': None, 'locators': {'page': '7'}, 'ids': {}, 'ref_key': 'Smith2020'}
+    # Harvard variants already resolved inside <ref>; keep them working
+    assert parse("<ref>{{harvp|Jones|2019|p=3}}</ref>")['cite_type'] == 'harv'
+    # a stray {{rp}} inside a <ref> yields its page
+    assert parse("<ref>{{rp|59-60}}</ref>")['locators'] == {'pages': '59-60'}
+
+
+# --- WL-4: page lists mixing single numbers and ranges --------------------
+
+def test_parse_page_range_mixed_list():
+    assert _parse_page_range("21, 31, 56-57") == 4
+    assert _parse_page_range("21, 31, 56\u201357") == 4
+    assert _parse_page_range("5, 7-9") == 4
+    assert _parse_page_range("S1, S3-S5") == 4
+    # all-singles list unchanged
+    assert _parse_page_range("100, 105, 110") == 3
+    # stray trailing comma behaves as before
+    assert _parse_page_range("21,") == 1
+    # malformed list stays unparseable
+    assert _parse_page_range("21, foo") is None
+
+
+def test_detect_and_count_mixed_page_list():
+    assert detect_locator_issues({'cite_type': 'cite book', 'pages': '21, 31, 56-57'}) == []
+    assert compute_located_pages({'pages': '21, 31, 56-57'}) == 4
+    # a mixed list under page/p is still flagged as a range/list
+    assert detect_locator_issues({'page': '21, 31, 56-57'}) == ['page_range']
+    assert detect_locator_issues({'pages': '21, foo'}) == ['pages_unparseable']
+
+
+# --- WL-5: generic fallback for unknown French templates ------------------
+
+def test_parse_fr_unknown_template_fallback():
+    assert parse("{{OuvrageX|titre=X|page=42}}", 'fr') == {
+        'cite_type': 'ouvragex', 'locators': {'page': '42'}, 'ids': {}}
+    assert parse("{{Lien web inconnu|url=X|passage=3}}", 'fr')['locators'] == {'passage': '3'}
+    # English generic fallback is unchanged
+    assert parse("{{cite dnb|title=X|page=42}}", 'en')['locators'] == {'page': '42'}
+
+
+# --- WL-8: helper annotations and dead-code behaviour ---------------------
+
+def test_templated_ref_and_which_cite_template_helpers():
+    assert is_templated_ref("{{cite book}}") is True
+    assert is_templated_ref("{{cite book}}.") is False
+    assert is_templated_ref("") is False
+    assert which_cite_template("{{ cite journal |title=X}}") == 'cite journal'
+    assert which_cite_template("{{cite AV media notes|title=X}}") == 'cite av media notes'
+    assert which_cite_template("{{sfn|X}}") is None
+
+
+# --- WL-6: comment between </ref> and {{rp}} ------------------------------
+
+def test_extract_rp_adjacency_comment():
+    pytest.importorskip("mwparserfromhell")
+    from wikiloc.extract import extract_references
+    # an HTML comment between </ref> and {{rp}} is transparent
+    refs = extract_references("<ref>{{cite book|title=X}}</ref><!-- c -->{{rp|13}}")
+    assert refs[0]['ref_kind'] == 'ref_tag+rp'
+    assert refs[0]['ref_rp_raw'] == '{{rp|13}}'
+    # whitespace only still works
+    refs = extract_references("<ref>{{cite book|title=X}}</ref>   {{rp|13}}")
+    assert refs[0]['ref_kind'] == 'ref_tag+rp'
+    # real inline text still breaks the adjacency (regression guard)
+    refs = extract_references("<ref>{{cite book|title=X}}</ref> some text {{rp|13}}")
+    assert refs[0]['ref_kind'] == 'ref_tag'
+    # end to end: the override is applied through resolution
+    resolved = resolve_references(refs=extract_references(
+        "<ref name=a>{{cite book|title=X}}</ref><!-- c -->{{rp|13}}"))
+    assert resolved[0]['page'] == '13'
 
 
 if __name__ == '__main__':
