@@ -9,7 +9,7 @@ description = "Parse in-source locators (page, pages, chapter, quote, ...) from 
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "Citation Location Needed Author(s)" }]
+authors = [{ name = "Mario Morvan", email = "contact@mariomorvan.com" }]
 keywords = ["wikipedia", "citations", "wikitext", "locators", "verifiability"]
 classifiers = [
     "Intended Audience :: Science/Research",
@@ -19,6 +19,10 @@ classifiers = [
 ]
 # Zero runtime dependencies: the parser uses only the Python standard library.
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/mrmvn/wikiloc"
+Repository = "https://github.com/mrmvn/wikiloc"
 
 [project.optional-dependencies]
 test = ["pytest"]
