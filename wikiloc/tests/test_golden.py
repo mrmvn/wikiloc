@@ -15,7 +15,7 @@ from wikiloc.parser import (
     parse,
     resolve_references,
     _ref_from_wikitext,
-    _compute_located_pages,
+    compute_located_pages,
 )
 from wikiloc.constants import LOC_PARAMS
 
@@ -91,7 +91,7 @@ GOLD = [
     ('<ref name="nytimes"/>', '<ref name="nytimes">{{cite news |url=https://movies.nytimes.com/movie/100784/Mad-About-Music/details |archive-url=https://web.archive.org/web/20121017124729/http://movies.nytimes.com/movie/100784/Mad-About-Music/details |url-status=dead |archive-date=October 17, 2012 |department=Movies & TV Dept. |work=[[The New York Times]] |date=2012 |title=Mad About Music (1938) |access-date=December 10, 2008}}</ref>', '', '', '', None, ''),
     ('<ref name="cnn-bursztynsky-20200722">{{Cite news |last=Bursztynsky |first=Jessica |date=July 22, 2020 |title=Tesla will build its next Gigafactory near Austin, Texas |work=CNBC |department=Business News and Finance |url=https://www.cnbc.com/2020/07/22/tesla-will-build-its-next-gigafactory-near-austin-texas.html |url-status=live |access-date=July 26, 2020 |archive-url=https://web.archive.org/web/20210323145102/https://www.cnbc.com/2020/07/22/tesla-will-build-its-next-gigafactory-near-austin-texas.html |archive-date=March 23, 2021}}</ref>', None, '', '', '', None, ''),
     ('<ref name="Florida Today 13 August 1974">{{cite news |title=Obituary for Thomas D Bailey Bailey (Aged 76) |url=https://www.newspapers.com/clip/66130712/obituary-for-thomas-d-bailey-bailey/ |access-date=27 December 2020 |work=Florida Today |date=13 August 1974 |pages=4B}}{{Open Access}}</ref>', None, 'pages', '', '4B}}{{Open Access', None, "pages value differs (gold='4B'); located_pages differs (gold=1)"),
-    ('<ref name="auto6"/>', '<ref name="auto6">{{Cite news|url=https://www.newspapers.com/clip/115073366/north-county-times/|newspaper=[[North County Times]]|via=[[Newspapers.com]]|date=December 3, 1998|page=25, [https://www.newspapers.com/clip/115073505/north-county-times/ 29]|title=He\'s one Hall of a load|author=Courtney, Will}} {{Open access}}</ref>', 'page', '25, [https://www.newspapers.com/clip/115073505/north-county-times/ 29]', '', 2, "page value differs (gold='25'); located_pages differs (gold=1)"),
+    ('<ref name="auto6"/>', '<ref name="auto6">{{Cite news|url=https://www.newspapers.com/clip/115073366/north-county-times/|newspaper=[[North County Times]]|via=[[Newspapers.com]]|date=December 3, 1998|page=25, [https://www.newspapers.com/clip/115073505/north-county-times/ 29]|title=He\'s one Hall of a load|author=Courtney, Will}} {{Open access}}</ref>', 'page', '25, [https://www.newspapers.com/clip/115073505/north-county-times/ 29]', '', 1, "page value differs (gold='25')"),
     ('<ref>{{Cite news |date=1935-04-13 |title=Clubs Wielded at Anti-War Gathering |url=https://www.newspapers.com/article/daily-news-clubs-wielded-at-anti-war-gat/147841498/ |access-date=2024-05-22 |work=Daily News |pages=1}}</ref>', None, 'pages', '', '1', 1, ''),
     ("<ref>{{cite web|url=http://web.mit.edu/newsoffice/1999/johnson-0609.html |title=A tribute to MIT's Howard Johnson |first=David |last=Warsh |work=The Boston Globe |date=June 1, 1999 |accessdate=April 4, 2007 |quote=At a critical time in the late 1960s, [[Howard Wesley Johnson|Johnson]] stood up to the forces of campus rebellion at MIT. Many university presidents were destroyed by the troubles. Only [[Edward Levi]], [[University of Chicago]] president, had comparable success guiding his institution to a position of greater strength and unity after the turmoil.}}</ref>", None, 'quote', '', '', None, ''),
     ('<ref name="north prospect">{{cite web |url=http://digital.nls.uk/slezer/engraving.cfm?sl=58 |title=The North Prospect of the City of Edenburgh |department=Slezer\'s Scotland |website=[[National Library of Scotland]] |accessdate=2012-01-09}}</ref>', None, '', '', '', None, ''),
@@ -221,5 +221,5 @@ def test_golden():
             assert _norm(flat.get("page") or flat.get("p")) == _norm(page), f"row{i} page"
         if pages:
             assert _norm(flat.get("pages") or flat.get("pp")) == _norm(pages), f"row{i} pages"
-        got_located = _compute_located_pages(flat)
+        got_located = compute_located_pages(flat)
         assert got_located == located, f"row{i} located_pages {got_located!r} != {located!r} ({note})"

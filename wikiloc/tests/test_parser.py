@@ -10,7 +10,7 @@ from wikiloc import parse
 from wikiloc.parser import (
     _extract_template_params,
     _parse_page_range,
-    _compute_located_pages,
+    compute_located_pages,
     _extract_ids_from_text,
     _detect_template_name,
     page_locator_flags,
@@ -211,7 +211,7 @@ def test_removed_non_locator_keywords():
 def test_page_locator_flags():
     assert page_locator_flags({'pages': '240'}) == ['pages_single']
     assert page_locator_flags({'page': '100-150'}) == ['page_range']
-    assert page_locator_flags({'page': '25, [url] 29'}) == ['page_range']
+    assert page_locator_flags({'page': '25, [url] 29'}) == ['page_unparseable']
     assert page_locator_flags({'page': 'pages 32'}) == ['page_unparseable']
     assert page_locator_flags({'pages': '4B}}{{Open Access'}) == ['pages_unparseable']
     assert page_locator_flags({'page': '42'}) == []
@@ -219,15 +219,34 @@ def test_page_locator_flags():
     assert page_locator_flags({'pages': 'S1-S5'}) == []
 
 
-def test_compute_located_pages():
-    assert _compute_located_pages({'page': '42'}) == 1
-    assert _compute_located_pages({'pages': '100-150'}) == 51
+def test_page_locator_flags_grouped():
+    # accepts the grouped parse() output
+    assert page_locator_flags(parse("{{cite book|title=X|page=ff42xx,44}}")) == ['page_unparseable']
+    assert page_locator_flags(parse("{{cite book|title=X|pages=240}}")) == ['pages_single']
+    assert page_locator_flags(parse("{{cite book|title=X|page=42}}")) == []
+
+
+def testcompute_located_pages_grouped():
+    assert compute_located_pages(parse("{{cite book|page=42}}")) == 1
+    assert compute_located_pages(parse("{{cite book|pages=100-150}}")) == 51
+    assert compute_located_pages(parse("{{cite book|quote=hi}}")) is None
+
+
+def test_parse_page_range_garbage():
+    assert _parse_page_range("ff42xx,44") is None
+    assert _parse_page_range("25, [url] 29") is None
+    assert _parse_page_range("A01, A04") == 2
+
+
+def testcompute_located_pages():
+    assert compute_located_pages({'page': '42'}) == 1
+    assert compute_located_pages({'pages': '100-150'}) == 51
     # non-paginated locators (quote/chapter/at) are deliberately excluded
-    assert _compute_located_pages({'quote': 'text'}) is None
-    assert _compute_located_pages({'chapter': 'Intro'}) is None
+    assert compute_located_pages({'quote': 'text'}) is None
+    assert compute_located_pages({'chapter': 'Intro'}) is None
     # when pages and a quote coexist, the page range wins (no quote->1 floor)
-    assert _compute_located_pages({'pages': '100-150', 'quote': 'text'}) == 51
-    assert _compute_located_pages({'cite_type': 'cite book'}) is None
+    assert compute_located_pages({'pages': '100-150', 'quote': 'text'}) == 51
+    assert compute_located_pages({'cite_type': 'cite book'}) is None
 
 
 def test_extract_ids_from_text():

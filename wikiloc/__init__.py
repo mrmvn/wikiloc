@@ -22,12 +22,13 @@ article-level list of references (with named-reference inheritance) is resolved
 with :func:`resolve_references`.
 """
 
-from .parser import parse, parse_reference, resolve_references, page_locator_flags
+from .parser import parse, parse_reference, resolve_references, page_locator_flags, compute_located_pages
 from .constants import LOC_PARAMS, ID_ALIASES, HARV_TEMPLATES
 from .extract import extract_references, parse_article
 
 __all__ = [
     "parse", "parse_reference", "resolve_references", "page_locator_flags",
+    "compute_located_pages",
     "extract_references", "parse_article",
     "LOC_PARAMS", "ID_ALIASES", "HARV_TEMPLATES",
 ]

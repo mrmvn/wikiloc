@@ -431,65 +431,77 @@ def _parse_cite_template(wikitext: str, language: str = 'en'):
     return out
 
 
+# A page token: optional single letter + 1-6 digits ("42", "S5", "A01", "11076").
+_PAGE_TOKEN = re.compile(r'[A-Za-z]?\d{1,6}')
+
+
 def _parse_page_range(value: str) -> Optional[int]:
     """Parse a page or page-range string into a page count.
 
     Handles: "42" → 1, "100-150" → 51, "100, 105, 110" → 3,
-    "vi-xii" (roman) → best-effort, "S1-S5" → 5.
-    Returns None if unparseable.
+    "S1-S5" → 5, abbreviated ends ("446–52" → 7). Returns None if unparseable.
     """
     if not value:
         return None
-    value = value.strip()
+    v = value.strip()
 
-    # Comma-separated list (e.g. "100, 105, 110")
-    if ',' in value:
-        parts = [p.strip() for p in value.split(',') if p.strip()]
-        return len(parts) if parts else None
+    # Comma-separated list of page numbers (e.g. "100, 105, 110").
+    if ',' in v:
+        parts = [p.strip() for p in v.split(',') if p.strip()]
+        if parts and all(_PAGE_TOKEN.fullmatch(p) for p in parts):
+            return len(parts)
+        return None
 
-    # Range with dash/en-dash/em-dash
-    m = re.match(r'^(\d+)\s*[–—-]+\s*(\d+)$', value)
+    # Range with dash/en-dash/em-dash, optionally with letter prefixes ("S1-S5").
+    # Searched anywhere, so trailing annotations ("200–201 & sketch 19") still parse.
+    m = re.search(r'([A-Za-z]?\d{1,6})\s*[–—−-]+\s*([A-Za-z]?\d{1,6})', v)
     if m:
         lo_s, hi_s = m.group(1), m.group(2)
-        lo, hi = int(lo_s), int(hi_s)
+        lo_d, hi_d = re.sub(r'\D', '', lo_s), re.sub(r'\D', '', hi_s)
+        lo, hi = int(lo_d), int(hi_d)
         # Abbreviated end: "446–52" -> 452, "142–3" -> 143.
-        if len(hi_s) < len(lo_s):
-            hi = int(lo_s[:len(lo_s) - len(hi_s)] + hi_s)
+        if len(hi_d) < len(lo_d):
+            hi = int(lo_d[:len(lo_d) - len(hi_d)] + hi_d)
         if hi >= lo:
             return hi - lo + 1
         return 1
 
-    # Single number
-    if re.fullmatch(r'\d+', value):
+    # Single page number → 1 page.
+    if _PAGE_TOKEN.fullmatch(v):
         return 1
-
-    # Fallback: extract two numbers separated by a dash (e.g. "S100-S105")
-    m = re.search(r'(\d+)\D+(\d+)', value)
-    if m:
-        lo, hi = int(m.group(1)), int(m.group(2))
-        if hi >= lo:
-            return hi - lo + 1
 
     return None
 
 
-def _compute_located_pages(parsed_ref: dict) -> Optional[int]:
+def _locators_of(parsed_ref: dict) -> dict:
+    """Return the flat locator map from a parse result or a flat record.
+
+    Accepts either the grouped dict returned by :func:`parse`
+    (``{'locators': {...}}``) or a flat dict whose locator keys sit at the top
+    level (as returned by :func:`resolve_references`).
+    """
+    if isinstance(parsed_ref, dict) and 'locators' in parsed_ref:
+        return parsed_ref['locators'] or {}
+    return parsed_ref or {}
+
+
+def compute_located_pages(parsed_ref: dict) -> Optional[int]:
     """Compute the located page count from page-related locators only.
 
-    Uses page/p (a single page counts as 1) and pages/pp (a page range counts
-    as its length). Quote/chapter/at and other non-paginated locators are
-    deliberately excluded so the parser stays unopinionated about how much a
-    non-page locator narrows the source — the analysis-side cost model decides
-    that separately. When several page locators coexist, returns the minimum.
+    Accepts either a grouped parse result or a flat locator record. Uses page/p
+    (a single page counts as 1) and pages/pp (a page range counts as its
+    length); quote/chapter/at and other non-paginated locators are deliberately
+    excluded. When several page locators coexist, returns the minimum.
     """
+    locs = _locators_of(parsed_ref)
     estimates = []
 
-    page_val = parsed_ref.get('page') or parsed_ref.get('p')
+    page_val = locs.get('page') or locs.get('p')
     if page_val:
         parsed = _parse_page_range(page_val)
         estimates.append(parsed if parsed else 1)
 
-    pages_val = parsed_ref.get('pages') or parsed_ref.get('pp')
+    pages_val = locs.get('pages') or locs.get('pp')
     if pages_val:
         parsed = _parse_page_range(pages_val)
         if parsed:
@@ -502,26 +514,25 @@ def _classify_page_value(value: str) -> Optional[str]:
     """Classify a page/page-range string, mirroring ``_parse_page_range``.
 
     Returns 'single', 'range', 'list' or 'unparseable' (None when empty).
-    Kept in sync with ``_parse_page_range`` so flags agree with counts.
     """
     v = (value or '').strip()
     if not v:
         return None
     if ',' in v:
-        return 'list'
-    if re.match(r'^\d+\s*[–—-]+\s*\d+$', v):
+        parts = [p.strip() for p in v.split(',') if p.strip()]
+        return 'list' if (parts and all(_PAGE_TOKEN.fullmatch(p) for p in parts)) else 'unparseable'
+    if re.search(r'[A-Za-z]?\d{1,6}\s*[–—−-]+\s*[A-Za-z]?\d{1,6}', v):
         return 'range'
-    if re.fullmatch(r'\d+', v):
+    if _PAGE_TOKEN.fullmatch(v):
         return 'single'
-    if re.search(r'\d+\D+\d+', v):
-        return 'range'      # e.g. "S1-S5"
     return 'unparseable'
 
 
 def page_locator_flags(parsed_ref: dict) -> list:
     """Flag suspicious page/pages locator values, for later manual review.
 
-    Returns a list of issue codes (empty when nothing looks off):
+    Accepts either a grouped parse result or a flat locator record. Returns a
+    list of issue codes (empty when nothing looks off):
       - 'pages_single'        a pages/pp value is a single page number
                               (often a total-page count, not a locator).
       - 'page_range'          a page/p value holds a range or comma list
@@ -529,9 +540,10 @@ def page_locator_flags(parsed_ref: dict) -> list:
       - 'page_unparseable'    a page/p value could not be parsed.
       - 'pages_unparseable'   a pages/pp value could not be parsed.
     """
+    locs = _locators_of(parsed_ref)
     flags = []
     for key in ('page', 'p'):
-        v = parsed_ref.get(key)
+        v = locs.get(key)
         if v:
             kind = _classify_page_value(v)
             if kind in ('range', 'list'):
@@ -539,7 +551,7 @@ def page_locator_flags(parsed_ref: dict) -> list:
             elif kind == 'unparseable':
                 flags.append('page_unparseable')
     for key in ('pages', 'pp'):
-        v = parsed_ref.get(key)
+        v = locs.get(key)
         if v:
             kind = _classify_page_value(v)
             if kind == 'single':
