@@ -308,7 +308,7 @@ def _parse_ref_tag_contents(content: str, language: str = 'en'):
     (``{{sfn}}``/``{{sfnp}}``/``{{r}}``) are routed to their own parsers
     (WL-3). Content with no leading template is parsed as untemplated text.
     """
-    lead = content.strip() if is_templated_ref(content) else _leading_balanced_template(content)
+    lead = _leading_balanced_template(content)
     if lead is None:
         return _parse_untemplated_ref(content, language)
 
