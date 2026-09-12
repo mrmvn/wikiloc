@@ -22,6 +22,8 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest"]
+# Reference *extraction* from whole-article wikitext (wikiloc.extract).
+extract = ["mwparserfromhell"]
 
 [tool.setuptools]
 packages = ["wikiloc", "wikiloc.tests"]

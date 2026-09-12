@@ -17,13 +17,19 @@ English is the default; French is included and more languages can be added by
 extending :data:`wikiloc.constants.LOC_PARAMS`. See the README for details.
 
 This is the standalone release of the parser used in the study "Citation
-Location Needed"; whole-article extraction and named-reference reconciliation
-are intentionally out of scope (see the project pipeline for those).
+Location Needed". Single references are parsed with :func:`parse`; an
+article-level list of references (with named-reference inheritance) is resolved
+with :func:`resolve_references`.
 """
 
-from .parser import parse, parse_reference
+from .parser import parse, parse_reference, resolve_references, page_locator_flags
 from .constants import LOC_PARAMS, ID_ALIASES, HARV_TEMPLATES
+from .extract import extract_references, parse_article
 
-__all__ = ["parse", "parse_reference", "LOC_PARAMS", "ID_ALIASES", "HARV_TEMPLATES"]
+__all__ = [
+    "parse", "parse_reference", "resolve_references", "page_locator_flags",
+    "extract_references", "parse_article",
+    "LOC_PARAMS", "ID_ALIASES", "HARV_TEMPLATES",
+]
 
 __version__ = "0.1.0"

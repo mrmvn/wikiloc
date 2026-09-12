@@ -30,26 +30,29 @@ _EN_TEMPLATE_KEYS = {k.lower() for k in LOC_PARAMS['en']}
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse(wikitext: str, language: str = 'en') -> dict:
-    """Parse a single reference/citation's wikitext and extract its locators.
+def parse(wikitext, language: str = 'en'):
+    """Parse reference wikitext and extract locators.
 
-    Accepts any of:
-    - a ``<ref>...</ref>`` tag (optionally followed by an ``{{rp|...}}``),
-    - a bare template: ``{{cite book|...}}``, ``{{citation|...}}``,
-      ``{{r|...}}``, ``{{sfn|...}}``, ``{{sfnp|...}}``, ``{{harvnb|...}}``,
-      ``{{rp|...}}``,
-    - a plain-text (untemplated) reference.
+    Accepts either:
+    - a single reference as a string — a ``<ref>...</ref>`` tag (optionally
+      followed by an ``{{rp|...}}``), a bare template (``{{cite book|...}}``,
+      ``{{citation|...}}``, ``{{r|...}}``, ``{{sfn|...}}``, ``{{sfnp|...}}``,
+      ``{{harvnb|...}}``, ``{{rp|...}}``), or plain (untemplated) text; or
+    - a list of references (strings or records) from one article, in which case
+      they are resolved with name inheritance (see :func:`resolve_references`).
 
     Args:
-        wikitext: The reference wikitext (a single reference, not a whole article).
+        wikitext: A single reference string, or a list of reference strings/records.
         language: Language code ('en' or 'fr') for template and locator detection.
 
     Returns:
-        A dict with:
+        For a single string, a dict with:
             - 'cite_type': normalized template name (e.g. 'cite book') or None
             - 'locators':  in-source locators found (page, pages, chapter, quote, ...)
             - 'ids':       identifiers found (isbn, doi, pmid, pmc, arxiv)
             - 'ref_key':   short-cite key for {{r}}/{{sfn}}/{{sfnp}} (only when present)
+        For a list, the resolved flat dicts (one per reference, annotated with
+        'ref_type' and 'ref_name'), as returned by :func:`resolve_references`.
 
     Examples:
         >>> parse("{{cite book|title=X|isbn=978-0-13-468599-1|page=42}}")
@@ -59,9 +62,12 @@ def parse(wikitext: str, language: str = 'en') -> dict:
         >>> parse("Smith, John (2020). Title. Publisher. p. 42")
         {'cite_type': None, 'locators': {'page': '42'}, 'ids': {}}
     """
-    ref = _ref_from_wikitext(wikitext, language)
-    flat = parse_reference(ref, language)
-    return _group_output(flat)
+    if isinstance(wikitext, str):
+        ref = _ref_from_wikitext(wikitext, language)
+        flat = parse_reference(ref, language)
+        return _group_output(flat)
+    # A list of references (strings or records): resolve with name inheritance.
+    return resolve_references(wikitext, language)
 
 
 def _ref_from_wikitext(wikitext: str, language: str = 'en') -> dict:
@@ -86,13 +92,13 @@ def _ref_from_wikitext(wikitext: str, language: str = 'en') -> dict:
 
     token = _leading_template_token(s)
     if token == 'r':
-        return {'ref_kind': 'r_template', 'ref_raw': s, 'ref_contents': ''}
+        return {'ref_kind': 'r_template', 'ref_raw': s, 'ref_contents': s}
     if token == 'sfn':
-        return {'ref_kind': 'sfn_template', 'ref_raw': s, 'ref_contents': ''}
+        return {'ref_kind': 'sfn_template', 'ref_raw': s, 'ref_contents': s}
     if token == 'sfnp':
-        return {'ref_kind': 'sfnp_template', 'ref_raw': s, 'ref_contents': ''}
+        return {'ref_kind': 'sfnp_template', 'ref_raw': s, 'ref_contents': s}
     if token in HARV_TEMPLATES:
-        return {'ref_kind': 'harv_template', 'ref_raw': s, 'ref_contents': ''}
+        return {'ref_kind': 'harv_template', 'ref_raw': s, 'ref_contents': s}
     if token == 'rp':
         # Standalone {{rp|...}}: reuse the ref_tag+rp path with empty contents.
         return {'ref_kind': 'ref_tag+rp', 'ref_contents': '', 'ref_raw': s, 'ref_rp_raw': s}
@@ -160,6 +166,18 @@ def _group_output(flat: dict) -> dict:
 # Structured single-reference parsing (also used by the analysis pipeline)
 # ---------------------------------------------------------------------------
 
+def _ref_content(ref: dict) -> str:
+    """Return a ref's locator-bearing content (template or plain text).
+
+    For bare templates (r/sfn/sfnp/harv) the content is the template string.
+    Tolerates legacy records that leave ``ref_contents`` empty and put the
+    template in ``ref_raw`` instead.
+    """
+    if ref.get('ref_contents'):
+        return ref['ref_contents']
+    return ref.get('ref_raw') or ''
+
+
 def parse_reference(ref: dict, language: str = 'en'):
     """Parse a reference record and extract location information.
 
@@ -210,21 +228,68 @@ def parse_reference(ref: dict, language: str = 'en'):
         return main_ref_dict
 
     elif ref['ref_kind'] == 'r_template':
-        return _parse_r_template(ref['ref_raw'], language)
+        return _parse_r_template(_ref_content(ref), language)
 
     elif ref['ref_kind'] == 'sfn_template':
-        return _parse_sfn_template(ref['ref_raw'], language)
+        return _parse_sfn_template(_ref_content(ref), language)
 
     elif ref['ref_kind'] == 'sfnp_template':
-        return _parse_sfnp_template(ref['ref_raw'], language)
+        return _parse_sfnp_template(_ref_content(ref), language)
 
     elif ref['ref_kind'] == 'harv_template':
         # Standalone Harvard short-cite; parsed via the cite path -> cite_type='harv'.
-        return _parse_cite_template(ref['ref_raw'], language)
+        return _parse_cite_template(_ref_content(ref), language)
 
     else:
         # Unknown reference kind
         return {'cite_type': None}
+
+
+def resolve_references(refs: list, language: str = 'en') -> list:
+    """Resolve a list of references from one article, applying name inheritance.
+
+    Each reference is a plain dict with (minimally): ``ref_kind``,
+    ``ref_contents`` (the locator-bearing content), ``ref_rp_raw``,
+    ``ref_name`` and ``ref_self_closing``. Extra fields are ignored.
+
+    A repeated use (self-closing named ref) inherits its main definition's
+    locators and ``cite_type``; the use's own parameters take precedence (the
+    main's fields are only copied when not already present). ``ref_key`` from
+    ``{{r}}``/``{{sfn}}``/``{{sfnp}}`` is merged into ``ref_name`` so short-cites
+    resolve against same-named main definitions.
+
+    Returns one resolved flat dict per input ref, each annotated with
+    ``ref_type`` and ``ref_name``.
+    """
+    # Normalise input: accept either reference records or raw wikitext strings.
+    refs = [_ref_from_wikitext(ref, language) if isinstance(ref, str) else ref for ref in refs]
+    parsed = [parse_reference(ref, language) for ref in refs]
+
+    mains = {}
+    for i, ref in enumerate(refs):
+        if _determine_ref_type(ref) == 'main' and ref.get('ref_name'):
+            mains[ref['ref_name']] = parsed[i]
+
+    resolved = []
+    for ref, own in zip(refs, parsed):
+        ref_type = _determine_ref_type(ref)
+        name = ref.get('ref_name')
+        ref_key = own.get('ref_key')
+        if ref_key and not name:
+            name = ref_key
+        out = dict(own)
+        out['ref_type'] = ref_type
+        out['ref_name'] = name
+        if ref_type in ('repeated', 'repeated_rp', 'r', 'rp', 'sfn', 'sfnp') and name in mains:
+            parent = mains[name]
+            if parent.get('cite_type'):
+                out['cite_type'] = parent['cite_type']
+            for key, value in parent.items():
+                if key != 'cite_type' and key not in out:
+                    out[key] = value
+        resolved.append(out)
+    return resolved
+
 
 def _detect_template_name(wikitext: str, language: str = 'en') -> Optional[str]:
     """Detect the template name in wikitext, handling language-specific patterns.
@@ -393,7 +458,11 @@ def _parse_page_range(value: str) -> Optional[int]:
     # Range with dash/en-dash/em-dash
     m = re.match(r'^(\d+)\s*[–—-]+\s*(\d+)$', value)
     if m:
-        lo, hi = int(m.group(1)), int(m.group(2))
+        lo_s, hi_s = m.group(1), m.group(2)
+        lo, hi = int(lo_s), int(hi_s)
+        # Abbreviated end: "446–52" -> 452, "142–3" -> 143.
+        if len(hi_s) < len(lo_s):
+            hi = int(lo_s[:len(lo_s) - len(hi_s)] + hi_s)
         if hi >= lo:
             return hi - lo + 1
         return 1
@@ -413,31 +482,79 @@ def _parse_page_range(value: str) -> Optional[int]:
 
 
 def _compute_located_pages(parsed_ref: dict) -> Optional[int]:
-    """Compute estimated located page count from locator fields.
+    """Compute the located page count from page-related locators only.
 
-    Priority: page/p → 1, pages/pp → parse range, quote → 1.
-    When multiple locators yield a value, returns the min (tightest).
+    Uses page/p (a single page counts as 1) and pages/pp (a page range counts
+    as its length). Quote/chapter/at and other non-paginated locators are
+    deliberately excluded so the parser stays unopinionated about how much a
+    non-page locator narrows the source — the analysis-side cost model decides
+    that separately. When several page locators coexist, returns the minimum.
     """
     estimates = []
 
-    # page / p → 1 page
     page_val = parsed_ref.get('page') or parsed_ref.get('p')
     if page_val:
         parsed = _parse_page_range(page_val)
         estimates.append(parsed if parsed else 1)
 
-    # pages / pp → range
     pages_val = parsed_ref.get('pages') or parsed_ref.get('pp')
     if pages_val:
         parsed = _parse_page_range(pages_val)
         if parsed:
             estimates.append(parsed)
 
-    # quote → 1 page
-    if parsed_ref.get('quote') or parsed_ref.get('q') or parsed_ref.get('quotation'):
-        estimates.append(1)
-
     return min(estimates) if estimates else None
+
+
+def _classify_page_value(value: str) -> Optional[str]:
+    """Classify a page/page-range string, mirroring ``_parse_page_range``.
+
+    Returns 'single', 'range', 'list' or 'unparseable' (None when empty).
+    Kept in sync with ``_parse_page_range`` so flags agree with counts.
+    """
+    v = (value or '').strip()
+    if not v:
+        return None
+    if ',' in v:
+        return 'list'
+    if re.match(r'^\d+\s*[–—-]+\s*\d+$', v):
+        return 'range'
+    if re.fullmatch(r'\d+', v):
+        return 'single'
+    if re.search(r'\d+\D+\d+', v):
+        return 'range'      # e.g. "S1-S5"
+    return 'unparseable'
+
+
+def page_locator_flags(parsed_ref: dict) -> list:
+    """Flag suspicious page/pages locator values, for later manual review.
+
+    Returns a list of issue codes (empty when nothing looks off):
+      - 'pages_single'        a pages/pp value is a single page number
+                              (often a total-page count, not a locator).
+      - 'page_range'          a page/p value holds a range or comma list
+                              (probably belongs in pages).
+      - 'page_unparseable'    a page/p value could not be parsed.
+      - 'pages_unparseable'   a pages/pp value could not be parsed.
+    """
+    flags = []
+    for key in ('page', 'p'):
+        v = parsed_ref.get(key)
+        if v:
+            kind = _classify_page_value(v)
+            if kind in ('range', 'list'):
+                flags.append('page_range')
+            elif kind == 'unparseable':
+                flags.append('page_unparseable')
+    for key in ('pages', 'pp'):
+        v = parsed_ref.get(key)
+        if v:
+            kind = _classify_page_value(v)
+            if kind == 'single':
+                flags.append('pages_single')
+            elif kind == 'unparseable':
+                flags.append('pages_unparseable')
+    return list(dict.fromkeys(flags))
 
 
 def _extract_template_params(wikitext: str) -> Dict[str, str]:
@@ -610,7 +727,7 @@ def _parse_untemplated_ref(wikitext: str, language: str = 'en'):
 
     # A page token: optional single section letter (S12, A3) + 1–4 digits,
     # which bounds the magnitude and avoids matching long IDs.
-    tok = r"[a-z]?\d{1,4}"
+    tok = r"[a-z]?\d{1,6}"      # up to 6 digits: single pages like Keesing's 11076
     range_pat = rf"{tok}\s*[-–—]\s*{tok}"
 
     def _is_year_range(s: str) -> bool:
@@ -620,13 +737,13 @@ def _parse_untemplated_ref(wikitext: str, language: str = 'en'):
     # Require an explicit page marker (p./pp./page/pages); we no longer accept a
     # bare numeric range, which matched year ranges, scorelines and dates.
     # 1) pp./pages + range -> pages
-    m = re.search(rf"\b(pp\.?|pages?)\s*({range_pat})\b", t_l)
+    m = re.search(rf"\b(pp\.?|pages?|pgs\.?)\s*({range_pat})\b", t_l)
     if m and not _is_year_range(m.group(2)):
         out['pages'] = m.group(2).strip()
         return out
 
     # 2) p./page + range or single page
-    m = re.search(rf"\b(p\.?|page)\s*({range_pat}|{tok})\b", t_l)
+    m = re.search(rf"\b(pg\.?|p\.?|page)\s*({range_pat}|{tok})\b", t_l)
     if m and not _is_year_range(m.group(2)):
         val = m.group(2).strip()
         out['pages' if re.search(r'[-–—]', val) else 'page'] = val
@@ -822,39 +939,6 @@ def which_cite_template(wikitext: dict) -> str:
     return None
 
 
-def _get_location_keywords(ref_type: str, language: str = 'en') -> list:
-    """Get the appropriate location keywords for a reference type.
-
-    Args:
-        ref_type: Type of reference ('main', 'repeated', 'repeated_rp', 'r', 'rp', 'sfn', 'sfnp')
-        language: Language code ('en' or 'fr')
-
-    Returns:
-        List of location keywords appropriate for this reference type
-    """
-    lang_keys = LOC_PARAMS.get(language, LOC_PARAMS['en'])
-
-    # Determine which keyword set to use
-    if ref_type in ['main', 'repeated', 'repeated_rp']:
-        # repeated_rp uses rp keywords since it has {{rp|...}} overrides
-        if ref_type == 'repeated_rp':
-            key_type = 'rp'
-        else:
-            key_type = 'cite'
-    elif ref_type == 'rp':
-        key_type = 'rp'
-    elif ref_type == 'r':
-        key_type = 'r'
-    elif ref_type == 'sfn':
-        key_type = 'sfn'
-    elif ref_type == 'sfnp':
-        key_type = 'sfnp'
-    else:
-        key_type = 'cite'
-
-    return lang_keys.get(key_type, lang_keys.get('cite', []))
-
-
 def _determine_ref_type(ref: dict) -> str:
     """Determine the reference type: main, repeated, repeated_rp, r, rp, sfn, or sfnp.
 
@@ -876,8 +960,6 @@ def _determine_ref_type(ref: dict) -> str:
 
     if ref_kind == 'r_template':
         return 'r'
-    elif ref_kind == 'rp_template':
-        return 'rp'
     elif ref_kind == 'sfn_template':
         return 'sfn'
     elif ref_kind == 'sfnp_template':

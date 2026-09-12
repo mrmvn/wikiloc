@@ -45,37 +45,29 @@ LOC_PARAMS = {
         ],
         'cite encyclopedia': _EN_CORE + [
             "chapter", "contribution", "section",       # https://en.wikipedia.org/wiki/Template:Cite_encyclopedia
-            "entry", "article", "department",
+            "entry", "article",
         ],
         'cite thesis': _EN_CORE + [
             "chapter", "section",                       # https://en.wikipedia.org/wiki/Template:Cite_thesis
         ],
         'cite report': _EN_CORE + [
-            "chapter", "section", "department",         # https://en.wikipedia.org/wiki/Template:Cite_report
+            "chapter", "section",                       # https://en.wikipedia.org/wiki/Template:Cite_report
             "time", "minutes",
         ],
 
         # -- Periodicals --
-        'cite journal': _EN_CORE + [
-            "department",                               # https://en.wikipedia.org/wiki/Template:Cite_journal
-        ],
+        'cite journal': _EN_CORE,                        # https://en.wikipedia.org/wiki/Template:Cite_journal
         'cite magazine': _EN_CORE + [
-            "department",                               # https://en.wikipedia.org/wiki/Template:Cite_magazine
-            "time", "minutes",
+            "time", "minutes",                          # https://en.wikipedia.org/wiki/Template:Cite_magazine
         ],
         'cite news': _EN_CORE + [
-            "department",                               # https://en.wikipedia.org/wiki/Template:Cite_news
-            "time", "minutes",
+            "time", "minutes",                          # https://en.wikipedia.org/wiki/Template:Cite_news
         ],
-        'cite conference': _EN_CORE + [
-            "department",                               # https://en.wikipedia.org/wiki/Template:Cite_conference
-        ],
+        'cite conference': _EN_CORE,                     # https://en.wikipedia.org/wiki/Template:Cite_conference
         'cite arxiv': _EN_CORE,                         # no extra locators
 
         # -- Web & social --
-        'cite web': _EN_CORE + [
-            "department",                               # https://en.wikipedia.org/wiki/Template:Cite_web
-        ],
+        'cite web': _EN_CORE,                             # https://en.wikipedia.org/wiki/Template:Cite_web
         'cite tweet': ["quote"],                        # atomic source, no page concept
         'cite instagram': ["quote"],
 
@@ -84,8 +76,7 @@ LOC_PARAMS = {
             "chapter", "time", "minutes",               # https://en.wikipedia.org/wiki/Template:Cite_AV_media
         ],
         'cite episode': _EN_CORE + [
-            "season", "series-no",                      # https://en.wikipedia.org/wiki/Template:Cite_episode
-            "time", "minutes",
+            "time", "minutes",                          # https://en.wikipedia.org/wiki/Template:Cite_episode
         ],
         'cite podcast': _EN_CORE + [
             "time", "minutes",                          # https://en.wikipedia.org/wiki/Template:Cite_podcast
@@ -123,21 +114,20 @@ LOC_PARAMS = {
         # Fallback for any unlisted 'cite ...' template
         'cite': _EN_CORE + [
             "chapter", "contribution", "entry", "article", "section",
-            "department",
             "pinpoint", "opinion",
             "level", "scene",
             "time", "minutes",
             "sheet", "sheets", "inset",
-            "season", "series-no",
         ],
 
         # CS2 generic citation template {{citation}} — same locators as the CS1 core.
         'citation': _EN_CORE + [
-            "chapter", "contribution", "entry", "article", "section", "department",
+            "chapter", "contribution", "entry", "article", "section",
         ],
 
         # -- Non-cite templates --
-        'rp': ["page", "p", "pages", "pp", "chapter", "section"],
+        'rp': ["page", "p", "pages", "pp", "chapter", "section",
+               "quote", "q", "qp", "qpp", "quote-loc", "quote-page", "quote-pages"],
         'r': ["page", "p", "pages", "pp", "chapter", "section"],
         'sfn': ["page", "p", "pages", "pp", "at", "loc"],
         'sfnp': ["page", "p", "pages", "pp", "at", "loc"],

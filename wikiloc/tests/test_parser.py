@@ -4,6 +4,8 @@ Depends only on the `wikiloc` package (no analysis stack, no data files).
 Run with `pytest` or directly: `python -m wikiloc.tests.test_parser`.
 """
 
+import pytest
+
 from wikiloc import parse
 from wikiloc.parser import (
     _extract_template_params,
@@ -11,6 +13,8 @@ from wikiloc.parser import (
     _compute_located_pages,
     _extract_ids_from_text,
     _detect_template_name,
+    page_locator_flags,
+    resolve_references,
 )
 
 
@@ -22,10 +26,10 @@ def test_parse_cite_template_string():
         'locators': {'page': '42'},
         'ids': {'isbn': '978-0-13-468599-1'},
     }
-    # cite journal: locator + identifier separated; page-not-authorised keys dropped
+    # cite journal: locator + identifier separated; non-locator keys (department) dropped
     assert parse("{{cite journal|title=P|doi=10.1/x|pages=5-9|department=Sci}}") == {
         'cite_type': 'cite journal',
-        'locators': {'pages': '5-9', 'department': 'Sci'},
+        'locators': {'pages': '5-9'},
         'ids': {'doi': '10.1/x'},
     }
     # CS2 generic citation template
@@ -118,6 +122,41 @@ def test_parse_fr_cite_report_locators():
 
 # --- Helper coverage (used by the pipeline and public API) ------------------
 
+def test_rp_quote_aliases():
+    # A18: Template:Rp supports quote aliases; the parser must not drop them.
+    assert parse("<ref>{{cite book|title=X}}</ref>{{rp|quote=long quote}}") == {
+        'cite_type': 'cite book', 'locators': {'quote': 'long quote'}, 'ids': {},
+    }
+
+
+def test_resolve_references_inheritance():
+    refs = [
+        {'ref_kind': 'ref_tag', 'ref_self_closing': False, 'ref_name': 'smith2020',
+         'ref_contents': '{{cite book|author=Smith|title=A Book|page=87}}', 'ref_rp_raw': None},
+        {'ref_kind': 'ref_tag', 'ref_self_closing': True, 'ref_name': 'smith2020',
+         'ref_contents': '', 'ref_rp_raw': None},
+    ]
+    resolved = resolve_references(refs)
+    assert resolved[0]['ref_type'] == 'main'
+    assert resolved[0]['page'] == '87'
+    assert resolved[1]['ref_type'] == 'repeated'
+    assert resolved[1]['cite_type'] == 'cite book'
+    assert resolved[1]['page'] == '87'   # inherited from the main definition
+
+
+def test_resolve_references_rp_override():
+    refs = [
+        {'ref_kind': 'ref_tag', 'ref_self_closing': False, 'ref_name': 'smith2020',
+         'ref_contents': '{{cite book|title=A Book|page=87}}', 'ref_rp_raw': None},
+        {'ref_kind': 'ref_tag+rp', 'ref_self_closing': True, 'ref_name': 'smith2020',
+         'ref_contents': '', 'ref_rp_raw': '{{rp|page=92}}'},
+    ]
+    resolved = resolve_references(refs)
+    assert resolved[1]['ref_type'] == 'repeated_rp'
+    assert resolved[1]['cite_type'] == 'cite book'   # inherited
+    assert resolved[1]['page'] == '92'               # rp overrides the page
+
+
 def test_extract_template_params():
     assert _extract_template_params("{{cite web|title=Example|page=42}}") == {
         'title': 'Example', 'page': '42'}
@@ -136,12 +175,58 @@ def test_parse_page_range():
     assert _parse_page_range("") is None
 
 
+def test_parse_page_range_abbreviated():
+    # abbreviated second number shares the leading digits of the first
+    assert _parse_page_range("446–52") == 7
+    assert _parse_page_range("369-76") == 8
+    assert _parse_page_range("142–3") == 2
+    # unchanged behaviour
+    assert _parse_page_range("100-150") == 51
+    assert _parse_page_range("150-100") == 1
+
+
+def test_untemplated_pg_and_long_page():
+    # 'pg' marker and 5-digit single page numbers are recognised
+    assert parse("Jon Jørgensen, ''History of the Human Sciences'', vol. 27 no. 3, pg 45") == {
+        'cite_type': None, 'locators': {'page': '45'}, 'ids': {},
+    }
+    assert parse("''Keesing's Contemporary Archives 1950–1952'', page 11076") == {
+        'cite_type': None, 'locators': {'page': '11076'}, 'ids': {},
+    }
+
+
+def test_removed_non_locator_keywords():
+    # department / season / series-no are not in-source locators
+    assert parse("{{cite news|title=X|department=Sports|page=5}}") == {
+        'cite_type': 'cite news', 'locators': {'page': '5'}, 'ids': {},
+    }
+    assert parse("{{cite web|title=X|department=Foo}}") == {
+        'cite_type': 'cite web', 'locators': {}, 'ids': {},
+    }
+    assert parse("{{cite episode|title=X|season=2|series-no=3|time=10:00}}") == {
+        'cite_type': 'cite episode', 'locators': {'time': '10:00'}, 'ids': {},
+    }
+
+
+def test_page_locator_flags():
+    assert page_locator_flags({'pages': '240'}) == ['pages_single']
+    assert page_locator_flags({'page': '100-150'}) == ['page_range']
+    assert page_locator_flags({'page': '25, [url] 29'}) == ['page_range']
+    assert page_locator_flags({'page': 'pages 32'}) == ['page_unparseable']
+    assert page_locator_flags({'pages': '4B}}{{Open Access'}) == ['pages_unparseable']
+    assert page_locator_flags({'page': '42'}) == []
+    assert page_locator_flags({'pages': '100-150'}) == []
+    assert page_locator_flags({'pages': 'S1-S5'}) == []
+
+
 def test_compute_located_pages():
     assert _compute_located_pages({'page': '42'}) == 1
     assert _compute_located_pages({'pages': '100-150'}) == 51
-    assert _compute_located_pages({'quote': 'text'}) == 1
-    # tightest wins when several locators coexist
-    assert _compute_located_pages({'pages': '100-150', 'quote': 'text'}) == 1
+    # non-paginated locators (quote/chapter/at) are deliberately excluded
+    assert _compute_located_pages({'quote': 'text'}) is None
+    assert _compute_located_pages({'chapter': 'Intro'}) is None
+    # when pages and a quote coexist, the page range wins (no quote->1 floor)
+    assert _compute_located_pages({'pages': '100-150', 'quote': 'text'}) == 51
     assert _compute_located_pages({'cite_type': 'cite book'}) is None
 
 
@@ -151,6 +236,31 @@ def test_extract_ids_from_text():
     assert _extract_ids_from_text("See {{doi|10.1038/nature12373}}") == {
         'doi': '10.1038/nature12373'}
     assert _extract_ids_from_text("Just a plain reference") == {}
+
+
+def test_parse_list_overload():
+    # a list of reference strings is resolved with name inheritance
+    resolved = parse([
+        '<ref name="x">{{cite book|page=10}}</ref>',
+        '<ref name="x"/>{{rp|13}}',
+    ])
+    assert isinstance(resolved, list)
+    assert resolved[0]['page'] == '10'
+    assert resolved[1]['cite_type'] == 'cite book'   # inherited
+    assert resolved[1]['page'] == '13'                # rp overrides
+
+
+def test_parse_article_end_to_end():
+    mwparserfromhell = pytest.importorskip("mwparserfromhell")  # noqa: F841
+    from wikiloc import parse_article
+    art = ('<ref name="x">{{cite book|title=A|page=10}}</ref>\n'
+           '<ref name="x"/>\n'
+           '{{sfn|Smith|2020|p=42}}')
+    resolved = parse_article(art)
+    assert len(resolved) == 3
+    assert resolved[0]['ref_type'] == 'main' and resolved[0]['page'] == '10'
+    assert resolved[1]['ref_type'] == 'repeated' and resolved[1]['page'] == '10'  # inherited
+    assert resolved[2]['ref_type'] == 'sfn' and resolved[2]['p'] == '42'
 
 
 if __name__ == '__main__':
