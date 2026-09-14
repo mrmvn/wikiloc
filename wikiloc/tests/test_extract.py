@@ -162,3 +162,133 @@ def test_parse_article_with_infobox_and_list_defined_ref():
     assert all(r["page"] == "12" for r in by_name["b"])
     # reflist definition and its use both carry page 99
     assert all(r["page"] == "99" for r in by_name["c"])
+
+
+# --- CITEREF resolution ----------------------------------------------------
+#
+# Short cites ({{sfn}}/{{sfnp}}/Harvard/{{r}}) link to a full CS1/CS2 citation's
+# HTML anchor: the explicit |ref= value or the auto-generated
+# CITEREF<last-names><year> id. When the link resolves, the short cite inherits
+# the full citation's cite_type and identifiers.
+
+def _resolved_by_type(wikitext):
+    return {r["ref_type"]: r for r in parse_article(wikitext)}
+
+
+def test_sfn_inherits_via_auto_citeref_anchor():
+    wikitext = (
+        "Text.{{sfn|Smith|2020|p=3}}\n"
+        "<ref>{{cite book|last=Smith|first=John|year=2020|title=Book"
+        "|isbn=978-0-13-468599-1|pages=100-150}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    sfn = resolved["sfn"]
+    assert sfn["cite_type"] == "cite book"
+    assert sfn["isbn"] == "978-0-13-468599-1"
+    assert sfn["pages"] == "100-150"     # inherited from the full citation
+    assert sfn["p"] == "3"               # the short cite's own pinpoint wins
+
+
+def test_harvnb_inherits_via_auto_citeref_anchor():
+    wikitext = (
+        "{{harvnb|Jones|2019|p=7}}\n"
+        "<ref>{{cite book|last=Jones|first=A|date=2019|title=J|doi=10.1000/x}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    harv = resolved["harv"]
+    assert harv["cite_type"] == "cite book"
+    assert harv["doi"] == "10.1000/x"
+    assert harv["p"] == "7"
+
+
+def test_sfn_multi_author_citeref_anchor():
+    wikitext = (
+        "{{sfn|Smith|Jones|2020|p=1}}\n"
+        "<ref>{{cite book|last1=Smith|last2=Jones|year=2020|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] == "cite book"
+    assert resolved["sfn"]["isbn"] == "1-2-3"
+
+
+def test_sfn_editor_fallback_citeref_anchor():
+    wikitext = (
+        "{{sfn|Smith|1999|p=1}}\n"
+        "<ref>{{cite book|editor-last=Smith|editor-first=J|date=March 1999|title=E|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] == "cite book"
+    assert resolved["sfn"]["isbn"] == "1-2-3"
+
+
+def test_r_matches_explicit_ref_anchor():
+    wikitext = (
+        "{{r|Smith2020|p=9}}\n"
+        "<ref>{{cite book|title=No author|ref=Smith2020|isbn=978-0-13-468599-1}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["r"]["cite_type"] == "cite book"
+    assert resolved["r"]["isbn"] == "978-0-13-468599-1"
+    assert resolved["r"]["p"] == "9"
+
+
+def test_sfn_matches_explicit_citeref_ref():
+    wikitext = (
+        "{{sfn|Smith|2020|p=2}}\n"
+        "<ref>{{cite book|last=Smith|year=2020|ref=CITEREFSmith2020|doi=10.1/x}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] == "cite book"
+    assert resolved["sfn"]["doi"] == "10.1/x"
+
+
+def test_ref_none_disables_citeref_inheritance():
+    wikitext = (
+        "{{sfn|Smith|2020|p=3}}\n"
+        "<ref>{{cite book|last=Smith|year=2020|ref=none|isbn=978-0-13-468599-1}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] is None
+    assert "isbn" not in resolved["sfn"]
+
+
+def test_sfnref_expansion_matches_citeref_anchor():
+    wikitext = (
+        "{{sfn|Title|1999|p=2}}\n"
+        "<ref>{{cite book|title=Title|date=1999|ref={{sfnref|Title|1999}}|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] == "cite book"
+    assert resolved["sfn"]["isbn"] == "1-2-3"
+
+
+def test_ref_harv_forces_auto_citeref_anchor():
+    wikitext = (
+        "{{sfn|Smith|2020|p=1}}\n"
+        "<ref>{{cite book|last=Smith|year=2020|ref=harv|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfn"]["cite_type"] == "cite book"
+    assert resolved["sfn"]["isbn"] == "1-2-3"
+
+
+def test_sfnp_inherits_via_citeref_anchor():
+    wikitext = (
+        "{{sfnp|Smith|2020|p=5}}\n"
+        "<ref>{{cite book|last=Smith|year=2020|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["sfnp"]["cite_type"] == "cite book"
+    assert resolved["sfnp"]["isbn"] == "1-2-3"
+    assert resolved["sfnp"]["p"] == "5"
+
+
+def test_harvs_inherits_via_named_citeref_anchor():
+    wikitext = (
+        "{{harvs|txt|last=Smith|year=2020|p=4}}\n"
+        "<ref>{{cite book|last=Smith|year=2020|isbn=1-2-3}}</ref>"
+    )
+    resolved = _resolved_by_type(wikitext)
+    assert resolved["harv"]["cite_type"] == "cite book"
+    assert resolved["harv"]["isbn"] == "1-2-3"
+    assert resolved["harv"]["p"] == "4"

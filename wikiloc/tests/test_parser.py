@@ -19,6 +19,10 @@ from wikiloc.parser import (
     is_templated_ref,
     resolve_references,
     which_cite_template,
+    _cs1_anchor_from_params,
+    _ref_anchor_keys,
+    _short_cite_anchor_keys,
+    _ref_from_wikitext,
 )
 
 
@@ -499,6 +503,69 @@ def test_extract_rp_adjacency_comment():
     resolved = resolve_references(refs=extract_references(
         "<ref name=a>{{cite book|title=X}}</ref><!-- c -->{{rp|13}}"))
     assert resolved[0]['page'] == '13'
+
+
+# --- CS1 anchor (CITEREF) helpers -----------------------------------------
+
+def test_cs1_anchor_from_params_auto_and_explicit():
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|last=Smith|year=2020}}")
+    ) == "CITEREFSmith2020"
+    # |ref=harv forces the auto anchor
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|last=Smith|year=2020|ref=harv}}")
+    ) == "CITEREFSmith2020"
+    # |ref=none disables the anchor
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|last=Smith|year=2020|ref=none}}")
+    ) is None
+    # any other |ref= value is the literal anchor
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|title=No author|ref=Smith2020}}")
+    ) == "Smith2020"
+
+
+def test_cs1_anchor_from_params_date_and_editor():
+    # year is taken from |date= when |year= is absent
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|last=Smith|date=2020-03-04}}")
+    ) == "CITEREFSmith2020"
+    # editors are used when there is no author
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|editor-last=Smith|year=2020}}")
+    ) == "CITEREFSmith2020"
+    # up to four author last names are concatenated
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|last1=Smith|last2=Jones|year=2020}}")
+    ) == "CITEREFSmithJones2020"
+
+
+def test_cs1_anchor_from_params_sfnref():
+    assert _cs1_anchor_from_params(
+        _extract_template_params("{{cite book|title=Title|date=1999|ref={{sfnref|Title|1999}}}}")
+    ) == "CITEREFTitle1999"
+
+
+def test_ref_anchor_keys():
+    ref = _ref_from_wikitext("<ref>{{cite book|last=Smith|year=2020|isbn=1}}</ref>")
+    assert _ref_anchor_keys(ref) == ["CITEREFSmith2020"]
+    # no author/editor and no |ref= -> no anchor
+    ref = _ref_from_wikitext("<ref>{{cite book|title=No author}}</ref>")
+    assert _ref_anchor_keys(ref) == []
+    ref = _ref_from_wikitext("<ref>{{cite book|last=Smith|year=2020|ref=none}}</ref>")
+    assert _ref_anchor_keys(ref) == []
+
+
+def test_short_cite_anchor_keys():
+    assert _short_cite_anchor_keys(
+        _ref_from_wikitext("{{sfn|Smith|2020|p=3}}")
+    ) == ["CITEREFSmith2020"]
+    assert _short_cite_anchor_keys(
+        _ref_from_wikitext("{{harvnb|Smith|Jones|2020|p=3}}")
+    ) == ["CITEREFSmithJones2020"]
+    assert _short_cite_anchor_keys(
+        _ref_from_wikitext("{{r|Smith2020}}")
+    ) == ["Smith2020"]
 
 
 if __name__ == '__main__':

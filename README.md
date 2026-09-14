@@ -77,6 +77,29 @@ references. For untemplated text, only pages/page-ranges introduced by an
 explicit marker (`p.`, `pp.`, `page`, `pages`, `pg`, `pgs`) are read, so years,
 scores and dates are not mistaken for page numbers.
 
+### Short-cite (CITEREF) resolution
+
+At article level, `parse()` on a list and `parse_article()` resolve shortened
+footnotes (`{{sfn}}`, `{{sfnp}}`, the Harvard family) and `{{r}}` keys against
+full CS1/CS2 citations through their HTML anchor: the explicit `|ref=` value or
+the auto-generated `CITEREF<last-names><year>` id (built from up to four author
+last names — editors when there is no author — plus the year from `|year=` or
+`|date=`, mirroring Module:Citation/CS1). A matching short cite inherits the full
+citation's `cite_type` and identifiers (`isbn`, `doi`, …), so enrichment follows
+the link.
+
+```python
+parse_article(
+    "Text.{{sfn|Smith|2020|p=3}}\n"
+    "<ref>{{cite book|last=Smith|year=2020|isbn=978-0-13-468599-1|pages=100-150}}</ref>"
+)
+# the sfn record inherits cite_type='cite book', isbn=… and pages='100-150'
+```
+
+`|ref=none` disables the anchor, `|ref=harv` forces the auto id, any other
+`|ref=` value is the literal id, and `{{sfnref|…}}`/`{{harvid|…}}` expand to
+CITEREF ids.
+
 
 ## Flags
 

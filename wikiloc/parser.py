@@ -54,7 +54,7 @@ def parse(wikitext, language: str = 'en', with_flags: bool = False):
             - 'cite_type': normalized template name (e.g. 'cite book') or None
             - 'locators':  in-source locators found (page, pages, chapter, quote, ...)
             - 'ids':       identifiers found (isbn, doi, pmid, pmc, arxiv)
-            - 'ref_key':   short-cite key for {{r}}/{{sfn}}/{{sfnp}} (only when present)
+            - 'ref_key':   short-cite key for {{r}}/{{sfn}}/{{sfnp}}/Harvard (only when present)
             - 'flags':     list of issue codes (only when ``with_flags=True``)
         For a list, the resolved flat dicts (one per reference, annotated with
         'ref_type' and 'ref_name', plus 'flags' when ``with_flags=True``), as
@@ -279,8 +279,7 @@ def parse_reference(ref: dict, language: str = 'en'):
         return _parse_sfnp_template(_ref_content(ref), language)
 
     elif ref['ref_kind'] == 'harv_template':
-        # Standalone Harvard short-cite; parsed via the cite path -> cite_type='harv'.
-        return _parse_cite_template(_ref_content(ref), language)
+        return _parse_harv_template(_ref_content(ref), language)
 
     else:
         # Unknown reference kind
@@ -321,6 +320,8 @@ def _parse_ref_tag_contents(content: str, language: str = 'en'):
         parsed = _parse_r_template(lead, language)
     elif token == 'rp':
         parsed = _parse_rp_template(lead, language)
+    elif token in HARV_TEMPLATES:
+        parsed = _parse_harv_template(lead, language)
     else:
         parsed = _parse_cite_template(lead, language)
 
@@ -343,8 +344,15 @@ def resolve_references(refs: list, language: str = 'en') -> list:
     A repeated use (self-closing named ref) inherits its main definition's
     locators and ``cite_type``; the use's own parameters take precedence (the
     main's fields are only copied when not already present). ``ref_key`` from
-    ``{{r}}``/``{{sfn}}``/``{{sfnp}}`` is merged into ``ref_name`` so short-cites
-    resolve against same-named main definitions.
+    ``{{r}}``/``{{sfn}}``/``{{sfnp}}``/Harvard short-cites is merged into
+    ``ref_name`` so short-cites resolve against same-named main definitions.
+
+    Short-cites are additionally matched to full CS1/CS2 citations through their
+    CITEREF anchor: the full citation's explicit ``|ref=`` value (or its
+    auto-generated ``CITEREF<last-names><year>`` id) is compared with the
+    ``{{sfn}}``/``{{sfnp}}``/Harvard anchor and the ``{{r}}`` key. A match makes
+    the short cite inherit the full citation's ``cite_type`` and identifiers
+    (ISBN/DOI/…), so enrichment follows the link.
 
     Returns one resolved flat dict per input ref, each annotated with
     ``ref_type`` and ``ref_name``.
@@ -353,10 +361,15 @@ def resolve_references(refs: list, language: str = 'en') -> list:
     refs = [_ref_from_wikitext(ref, language) if isinstance(ref, str) else ref for ref in refs]
     parsed = [parse_reference(ref, language) for ref in refs]
 
+    # Ref-type name inheritance (repeated uses and same-named short cites).
     mains = {}
+    # CS1 anchor inheritance (CITEREF / explicit |ref= links).
+    anchors = {}
     for i, ref in enumerate(refs):
         if _determine_ref_type(ref) == 'main' and ref.get('ref_name'):
             mains[ref['ref_name']] = parsed[i]
+        for anchor in _ref_anchor_keys(ref, language):
+            anchors.setdefault(anchor, parsed[i])
 
     resolved = []
     for ref, own in zip(refs, parsed):
@@ -368,8 +381,17 @@ def resolve_references(refs: list, language: str = 'en') -> list:
         out = dict(own)
         out['ref_type'] = ref_type
         out['ref_name'] = name
-        if ref_type in ('repeated', 'repeated_rp', 'r', 'rp', 'sfn', 'sfnp') and name in mains:
+
+        parent = None
+        if name and ref_type in _NAME_INHERIT_TYPES and name in mains:
             parent = mains[name]
+        if parent is None and ref_type in _ANCHOR_INHERIT_TYPES:
+            for anchor in _short_cite_anchor_keys(ref, language):
+                if anchor in anchors:
+                    parent = anchors[anchor]
+                    break
+
+        if parent is not None:
             if parent.get('cite_type'):
                 out['cite_type'] = parent['cite_type']
             for key, value in parent.items():
@@ -1221,6 +1243,43 @@ def _parse_sfnp_template(wikitext: str, language: str = 'en'):
     return out
 
 
+def _parse_harv_template(wikitext: str, language: str = 'en'):
+    """Parse a Harvard author–date short-cite template.
+
+    Covers the ``HARV_TEMPLATES`` family (``{{harvnb}}``, ``{{harvtxt}}``,
+    ``{{harvp}}``, ``{{harv}}``, ``{{harvcol*}}``, ``{{harvs}}``). Like
+    ``{{sfn}}``, these link to a full citation's CITEREF anchor, so the parser
+    surfaces the short-cite key under ``ref_key`` and the page locators under
+    their literal parameter keys; ``cite_type`` is ``'harv'``.
+
+    Examples:
+        >>> _parse_harv_template("{{harvnb|Smith|2020|p=42}}")
+        {'cite_type': 'harv', 'ref_key': 'Smith', 'p': '42'}
+    """
+    out = {'cite_type': 'harv'}
+
+    # Get location indicators for the Harvard short-cite family.
+    location_keywords = LOC_PARAMS.get(language, LOC_PARAMS['en']).get('harv', [])
+
+    params = _extract_template_params(wikitext)
+
+    # The short-cite key: {{harvnb|Author|Year|...}} is positional like {{sfn}};
+    # {{harvs|txt|last=...|year=...}} names the author instead.
+    if _leading_template_token(wikitext) == 'harvs':
+        for key in ('last', 'last1', 'surname', 'surname1'):
+            if key in params:
+                out['ref_key'] = params[key]
+                break
+    elif '1' in params:
+        out['ref_key'] = params['1']
+
+    for key, value in params.items():
+        if key.lower() in location_keywords:
+            out[key.lower()] = value
+
+    return out
+
+
 def is_templated_ref(wikitext: str) -> bool:
     """Determine if a reference is templated or not.
     Match the presence of '{{' and '}}' opening and closing the stripped wikitext.
@@ -1283,3 +1342,253 @@ def _determine_ref_type(ref: dict) -> str:
             return 'main'
     else:
         return 'main'  # Default
+
+
+# ---------------------------------------------------------------------------
+# CS1 anchor (CITEREF) resolution
+# ---------------------------------------------------------------------------
+# Full CS1/CS2 citations expose an HTML anchor id: an explicit ``|ref=`` value,
+# or an auto-generated ``CITEREF<last-names><year>`` id. Short-cite templates
+# (``{{sfn}}``, ``{{sfnp}}``, the Harvard family, ``{{r}}``) link to those ids.
+# Matching the two lets a short cite inherit the full citation's ``cite_type``
+# and identifiers.
+#
+# The rules mirror Module:Citation/CS1: up to four author last names (editors
+# when there is no author) plus the year from ``|year=`` or ``|date=``;
+# ``|ref=none`` disables the anchor, ``|ref=harv`` forces the auto id, and any
+# other ``|ref=`` value is the literal id (``{{sfnref}}``/``{{harvid}}`` are
+# expanded to CITEREF ids).
+
+# Ref types that may inherit through a matching ``ref_name``.
+_NAME_INHERIT_TYPES = {'repeated', 'repeated_rp', 'r', 'rp', 'sfn', 'sfnp', 'harv'}
+# Ref types that may additionally inherit through a matching CS1 anchor.
+_ANCHOR_INHERIT_TYPES = {'r', 'sfn', 'sfnp', 'harv'}
+
+
+def _first_param(params: dict, *keys: str):
+    """Return the first present, non-empty value among ``keys``, else None."""
+    for key in keys:
+        value = params.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _lower_params(params: dict) -> dict:
+    """Return ``params`` with lowercased keys (CS1 parameter names are case-insensitive)."""
+    return {str(key).lower(): value for key, value in params.items()}
+
+
+def _strip_comments(value: str) -> str:
+    """Remove HTML comments from ``value``."""
+    return re.sub(r'<!--.*?-->', '', value or '', flags=re.S)
+
+
+def _strip_wikilinks(value: str) -> str:
+    """Resolve ``[[target|label]]`` -> label and ``[[target]]`` -> target."""
+    def _repl(m):
+        inner = m.group(1)
+        return inner.split('|', 1)[1] if '|' in inner else inner
+    return re.sub(r'\[\[([^\[\]]+)\]\]', _repl, value or '')
+
+
+def _clean_name(value: str) -> str:
+    """Normalise one anchor name component (strip markup, comments, et al.)."""
+    v = _strip_comments(value)
+    v = _strip_wikilinks(v)
+    v = re.sub(r"'''", '', v)
+    v = re.sub(r"''", '', v)
+    v = re.sub(r'\bet\s+al\.?\s*$', '', v, flags=re.IGNORECASE)
+    return v.strip()
+
+
+def _year_from_date(value: str) -> str:
+    """Extract a CITEREF year from a date value (4 digits, n.d., or +letter)."""
+    v = (value or '').strip()
+    low = v.lower()
+    m = re.match(r'(n\.d\.?|nd)([a-z]?)$', low)
+    if m:
+        return m.group(1) + m.group(2)
+    m = re.search(r'\b([1-9]\d{3})([a-z]?)\b', v)
+    return (m.group(1) + m.group(2)) if m else ''
+
+
+def _cs1_last_keys(kind: str, i: int):
+    """Parameter-name candidates for the ``i``-th ``kind`` last name (CS1 priority)."""
+    if kind == 'author':
+        if i == 1:
+            return (
+                'last', 'last1', 'surname', 'surname1',
+                'author-last', 'author-last1', 'author1-last',
+                'author-surname', 'author-surname1', 'author1-surname',
+                'author', 'author1', 'host', 'host1', 'subject', 'subject1',
+                'authors',
+            )
+        return (
+            f'last{i}', f'surname{i}',
+            f'author-last{i}', f'author{i}-last',
+            f'author-surname{i}', f'author{i}-surname',
+            f'author{i}', f'host{i}', f'subject{i}',
+        )
+    if i == 1:
+        return (
+            'editor-last', 'editor-last1', 'editor1-last',
+            'editor-surname', 'editor-surname1', 'editor1-surname',
+            'editor', 'editor1', 'editors',
+        )
+    return (
+        f'editor-last{i}', f'editor{i}-last',
+        f'editor-surname{i}', f'editor{i}-surname',
+        f'editor{i}',
+    )
+
+
+def _cs1_name_slots(params: dict, kind: str) -> list:
+    """Return up to four cleaned last names for ``kind`` ('author' or 'editor')."""
+    p = _lower_params(params)
+    names = []
+    for i in range(1, 5):
+        name = _first_param(p, *_cs1_last_keys(kind, i))
+        if name:
+            name = _clean_name(name)
+            if name:
+                names.append(name)
+    return names[:4]
+
+
+def _cs1_year(params: dict) -> str:
+    """Return the CITEREF year for a full citation (|year= wins over |date=)."""
+    p = _lower_params(params)
+    year = _first_param(p, 'year')
+    if year:
+        return _clean_name(year)
+    date = _first_param(p, 'date')
+    if date:
+        return _year_from_date(date)
+    pd = _first_param(p, 'publication-date', 'publicationdate')
+    return _year_from_date(pd) if pd else ''
+
+
+def _cs1_auto_anchor(params: dict):
+    """Build the auto CITEREF anchor, or None when no author/editor names exist."""
+    p = _lower_params(params)
+    names = _cs1_name_slots(p, 'author') or _cs1_name_slots(p, 'editor')
+    if not names:
+        return None
+    return 'CITEREF' + ''.join(names) + _cs1_year(p)
+
+
+def _expand_ref_value(value: str) -> str:
+    """Expand a ``|ref=`` value: ``{{sfnref|...}}``/``{{harvid|...}}`` -> CITEREF id."""
+    v = (value or '').strip()
+    lead = _leading_balanced_template(v)
+    if lead and _leading_template_token(lead) in ('sfnref', 'harvid'):
+        parts = []
+        inner = _extract_template_params(lead)
+        i = 1
+        while str(i) in inner:
+            part = _clean_name(inner[str(i)])
+            if part:
+                parts.append(part)
+            i += 1
+        return 'CITEREF' + ''.join(parts)
+    return _clean_name(v)
+
+
+def _cs1_anchor_from_params(params: dict):
+    """Return a full CS1/CS2 citation's anchor id, or None when it has none."""
+    p = _lower_params(params)
+    ref = _first_param(p, 'ref')
+    if ref:
+        ref_clean = _clean_name(ref)
+        if ref_clean.lower() == 'none':
+            return None
+        if ref_clean.lower() == 'harv':
+            return _cs1_auto_anchor(p)
+        if ref_clean:
+            return _expand_ref_value(ref_clean)
+    return _cs1_auto_anchor(p)
+
+
+def _ref_anchor_keys(ref: dict, language: str = 'en') -> list:
+    """Anchor id(s) exposed by a full citation ref record (usually 0 or 1)."""
+    if ref.get('ref_kind') not in ('ref_tag', 'ref_tag+rp'):
+        return []
+    contents = ref.get('ref_contents') or ''
+    lead = _leading_balanced_template(contents)
+    if not lead:
+        return []
+    name_norm = _detect_template_name(lead, 'en')
+    if not name_norm or not (name_norm == 'citation' or name_norm.startswith('cite')):
+        return []
+    anchor = _cs1_anchor_from_params(_extract_template_params(lead))
+    return [anchor] if anchor else []
+
+
+def _positional_values(params: dict) -> list:
+    """Return the positional (1, 2, 3, …) template parameter values in order."""
+    values = []
+    i = 1
+    while str(i) in params:
+        values.append(params[str(i)].strip())
+        i += 1
+    return values
+
+
+def _looks_like_year(value: str) -> bool:
+    """True for a 3–4 digit year (optional disambiguator) or n.d./nd."""
+    v = (value or '').strip()
+    if re.fullmatch(r'[1-9]\d{2,3}[a-z]?', v):
+        return True
+    return v.lower() in ('n.d.', 'nd')
+
+
+def _harv_anchor_from_positional(values: list) -> str:
+    """Build a CITEREF anchor from sfn/harvard positional parameters."""
+    names = []
+    for value in values:
+        value = _clean_name(value)
+        if value:
+            names.append(value)
+    year_idx = None
+    for idx in range(len(names) - 1, -1, -1):
+        if _looks_like_year(names[idx]):
+            year_idx = idx
+            break
+    if year_idx is not None:
+        authors = names[:year_idx]
+        year = names[year_idx]
+    else:
+        authors = names
+        year = ''
+    return 'CITEREF' + ''.join(authors[:4]) + year
+
+
+def _short_cite_anchor_keys(ref: dict, language: str = 'en') -> list:
+    """Anchor id(s) a short-cite ref links to (usually 0 or more)."""
+    kind = ref.get('ref_kind')
+    contents = ref.get('ref_contents') or ''
+    if kind == 'r_template':
+        params = _extract_template_params(contents)
+        keys = []
+        for value in _positional_values(params):
+            key = _clean_name(value)
+            if key:
+                keys.append(key)
+        return keys
+    if kind in ('sfn_template', 'sfnp_template'):
+        params = _extract_template_params(contents)
+        anchor = _harv_anchor_from_positional(_positional_values(params))
+        return [anchor] if anchor != 'CITEREF' else []
+    if kind == 'harv_template':
+        params = _extract_template_params(contents)
+        if _leading_template_token(contents) == 'harvs':
+            p = _lower_params(params)
+            last = _clean_name(_first_param(p, 'last', 'last1', 'surname', 'surname1') or '')
+            year = _first_param(p, 'year', 'year1', 'date')
+            year = _year_from_date(year) if year else ''
+            anchor = 'CITEREF' + last + year
+            return [anchor] if anchor != 'CITEREF' else []
+        anchor = _harv_anchor_from_positional(_positional_values(params))
+        return [anchor] if anchor != 'CITEREF' else []
+    return []
