@@ -11,6 +11,7 @@ from wikiloc.parser import (
     _extract_template_params,
     _parse_page_range,
     _range_bounds,
+    _page_count_of_item,
     compute_located_pages,
     _extract_ids_from_text,
     _detect_template_name,
@@ -174,7 +175,8 @@ def test_parse_page_range():
     assert _parse_page_range("100–150") == 51
     assert _parse_page_range("100, 105, 110") == 3
     assert _parse_page_range("S100-S105") == 6
-    assert _parse_page_range("vi") is None
+    # Roman numerals are now valid page tokens (R1).
+    assert _parse_page_range("vi") == 1
     assert _parse_page_range("") is None
 
 
@@ -424,6 +426,37 @@ def test_detect_and_count_mixed_page_list():
     # a mixed list under page/p is still flagged as a range/list
     assert detect_locator_issues({'page': '21, 31, 56-57'}) == ['page_range']
     assert detect_locator_issues({'pages': '21, foo'}) == ['pages_unparseable']
+
+
+# --- Roman numerals (R1) ---------------------------------------------------
+
+def test_parse_page_range_roman_golden():
+    # Golden cases: single, en-dash range, and a range whose count is 2.
+    assert _parse_page_range('xiv') == 1
+    assert _parse_page_range('iv\u2013viii') == 5  # 4..8 inclusive
+    assert _parse_page_range('xxvii\u2013xxviii') == 2  # 27..28 inclusive
+    # ASCII hyphen and case-insensitivity work the same way.
+    assert _parse_page_range('iv-viii') == 5
+    assert _parse_page_range('XIV') == 1
+    # Mixed roman lists reuse the same item counter.
+    assert _parse_page_range('iv, vi\u2013viii') == 4  # 1 + (8 - 6 + 1)
+    assert _range_bounds('iv\u2013viii') == (4, 8)
+
+
+def test_parse_page_range_roman_strict_validation():
+    # Malformed numerals must stay unparseable rather than be half-matched.
+    assert _parse_page_range('IIII') is None
+    assert _parse_page_range('VX') is None
+    assert _parse_page_range('foo, iv') is None
+    assert _page_count_of_item('') is None
+
+
+def test_detect_issues_roman():
+    # A roman range under page/p is a range, not garbage or prose.
+    assert detect_locator_issues({'page': 'iv\u2013viii'}) == ['page_range']
+    assert detect_locator_issues({'page': 'xiv'}) == []
+    assert detect_locator_issues({'pages': 'xiv'}) == ['pages_single']
+    assert compute_located_pages({'pages': 'iv\u2013viii'}) == 5
 
 
 # --- WL-5: generic fallback for unknown French templates ------------------

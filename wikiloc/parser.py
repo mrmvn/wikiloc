@@ -534,10 +534,29 @@ def _parse_cite_template(wikitext: str, language: str = 'en'):
     return out
 
 
-# A page token: optional single letter + one or more digits ("42", "S5",
-# "A01", "11076", "1000000"). There is no digit cap: absurd magnitudes are
-# caught by the 'page_huge' flag rather than rejected as unparseable.
-_PAGE_TOKEN = re.compile(r'[A-Za-z]?\d+')
+# A page token is either an optional single letter + one or more digits ("42",
+# "S5", "A01", "11076", "1000000") or a strict Roman numeral ("iv", "xiv",
+# "MCMXCIV"). There is no digit cap: absurd magnitudes are caught by the
+# 'page_huge' flag rather than rejected as unparseable.
+#
+# The Roman grammar rejects malformed values ("IIII", "VX") while accepting the
+# classical 1..4999 forms, case-insensitively. The leading lookahead keeps the
+# otherwise all-optional pattern from matching the empty string.
+_ROMAN_PATTERN = (
+    r'(?=[MDCLXVI])'
+    r'M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})'
+)
+_ROMAN = re.compile(_ROMAN_PATTERN, re.IGNORECASE)
+_PAGE_TOKEN_PATTERN = r'(?:[A-Za-z]?\d+|' + _ROMAN_PATTERN + r')'
+_PAGE_TOKEN = re.compile(_PAGE_TOKEN_PATTERN, re.IGNORECASE)
+# A page range: two page tokens separated by one or more dashes (ASCII or the
+# Unicode en/em/minus dashes). Each end may be numeric or a Roman numeral.
+_PAGE_RANGE = re.compile(
+    r'(' + _PAGE_TOKEN_PATTERN + r')\s*[–—−-]+\s*(' + _PAGE_TOKEN_PATTERN + r')',
+    re.IGNORECASE,
+)
+
+_ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
 
 # Flag thresholds (tunable). A page/p number above PAGE_HUGE_THRESHOLD, or a
 # pages/pp range longer than PAGES_RANGE_HUGE_THRESHOLD, is almost certainly a
@@ -546,19 +565,50 @@ PAGE_HUGE_THRESHOLD = 99999
 PAGES_RANGE_HUGE_THRESHOLD = 999
 
 
+def _roman_to_int(token: str) -> int:
+    """Convert a validated Roman numeral to int (``"xiv"`` → 14)."""
+    total = 0
+    prev = 0
+    for ch in reversed(token.upper()):
+        value = _ROMAN_VALUES[ch]
+        if value < prev:
+            total -= value
+        else:
+            total += value
+            prev = value
+    return total
+
+
+def _page_token_to_int(token: str) -> Optional[int]:
+    """Convert one page token to int, whether digits or Roman, else None."""
+    token = (token or '').strip()
+    if not token:
+        return None
+    if _ROMAN.fullmatch(token):
+        return _roman_to_int(token)
+    digits = re.sub(r'\D', '', token)
+    return int(digits) if digits else None
+
+
 def _range_bounds(value: str):
     """Return (lo, hi) for the first page range found in ``value``, else None.
 
-    Expands abbreviated ends ("446–52" → (446, 452), "142–3" → (142, 143)).
+    Expands abbreviated numeric ends ("446–52" → (446, 452), "142–3" →
+    (142, 143)) and understands Roman-numeral ranges ("iv–viii" → (4, 8)).
     Mirrors the range detection used by :func:`_parse_page_range`.
     """
-    m = re.search(r'([A-Za-z]?\d+)\s*[–—−-]+\s*([A-Za-z]?\d+)', value or '')
+    m = _PAGE_RANGE.search(value or '')
     if not m:
         return None
-    lo_d, hi_d = re.sub(r'\D', '', m.group(1)), re.sub(r'\D', '', m.group(2))
-    lo, hi = int(lo_d), int(hi_d)
-    if len(hi_d) < len(lo_d):
-        hi = int(lo_d[:len(lo_d) - len(hi_d)] + hi_d)
+    lo_tok, hi_tok = m.group(1), m.group(2)
+    lo, hi = _page_token_to_int(lo_tok), _page_token_to_int(hi_tok)
+    if lo is None or hi is None:
+        return None
+    # Abbreviated numeric ends only: "446–52" → 452, "142–3" → 143. Roman
+    # endpoints have no abbreviation convention.
+    lo_digits, hi_digits = re.sub(r'\D', '', lo_tok), re.sub(r'\D', '', hi_tok)
+    if lo_digits and hi_digits and len(hi_digits) < len(lo_digits):
+        hi = int(lo_digits[:len(lo_digits) - len(hi_digits)] + hi_digits)
     return lo, hi
 
 
@@ -657,7 +707,7 @@ def _classify_page_value(value: str) -> Optional[str]:
         if not parts:
             return 'unparseable'
         return 'list' if all(_page_count_of_item(p) is not None for p in parts) else 'unparseable'
-    if re.search(r'[A-Za-z]?\d+\s*[–—−-]+\s*[A-Za-z]?\d+', v):
+    if _PAGE_RANGE.search(v):
         return 'range'
     if _PAGE_TOKEN.fullmatch(v):
         return 'single'
@@ -681,7 +731,7 @@ def _is_clean_page_value(value: str) -> bool:
     "100-150", "42", "S1-S5", "100, 105" are clean; "200–201 & sketch 19" is
     not (a range can be extracted from it, but it also carries prose).
     """
-    cleaned = re.sub(r'[A-Za-z]?\d+', '', value or '')
+    cleaned = _PAGE_TOKEN.sub('', value or '')
     cleaned = re.sub(r'[–—−\-,\s]', '', cleaned)
     return cleaned == ''
 
