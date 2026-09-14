@@ -13,7 +13,8 @@ citation template authorises.
 - English by default; French included but not fully tested; more languages can be added.
 - Three levels: a single reference, an article's reference list, or whole-article wikitext.
 
-The parser is regression-tested against a golden set of 160 hand-annotated citations (English Wikipedia, 2014 and 2026 snapshots, stratified by template and locator type) in tests/test_golden.py. On that set it reaches 100% precision and recall for locator presence and type; four malformed-source citations keep the parser's raw value rather than the human gold and are documented in the test.
+The parser is regression-tested against a golden set of 160 hand-annotated citations (English Wikipedia, 2014 and 2026 snapshots, stratified by template and locator type) in tests/test_golden.py.
+On that set it reaches 100% precision and recall for locator presence and type. Every row also asserts the `page`/`pages` value (when one is expected) and the `compute_located_pages()` count. Four malformed-source citations keep the parser's raw value rather than the human gold; each is documented with a note in the test explaining the mismatch.
 
 ## Install
 
@@ -124,6 +125,24 @@ locator record.
 
 Quote/chapter/`at`/`loc` and other non-paginated locators are deliberately
 excluded: the package stays unopinionated about how much they narrow a source.
+
+### What the count does not cover
+
+`compute_located_pages` is an estimate, not an exact page count:
+
+- only `page`/`pages` (`p`/`pp`) are counted — a page number buried in an
+  `at`/`loc` value (e.g. `at=cc1278-84`) is not;
+- a single `pages`/`pp` number counts as **1** page even when it is really a
+  total-page count rather than a pin (see the `pages_single` flag);
+- malformed values are absorbed, not surfaced: an unparseable `page`/`p` still
+  counts as 1, while one bad item in a `pages`/`pp` list drops the whole list
+  (treated as absent);
+- a reversed range counts as 1;
+- when `page` and `pages` coexist, only the minimum is returned;
+- Roman numerals are accepted only in the strict 1–4999 grammar (`IIII`, `VX`
+  are rejected).
+
+Pair the count with `detect_locator_issues` when these cases matter.
 
 
 ## Extending
